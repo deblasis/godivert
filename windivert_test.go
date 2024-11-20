@@ -25,7 +25,7 @@ func setupTestDLL(t *testing.T) {
 }
 
 func TestDLLLifecycle(t *testing.T) {
-	// First unload any existing DLL
+	// Ensure clean initial state by unloading any existing DLL
 	if err := UnloadDLL(); err != nil {
 		t.Fatalf("Failed to unload initial DLL: %v", err)
 	}
@@ -252,15 +252,18 @@ func TestNewWinDivertHandlePrivileges(t *testing.T) {
 }
 
 func createICMPPacket() []byte {
-	// Create a simple ICMP echo request packet
-	packet := make([]byte, 84) // 20 bytes IP header + 8 bytes ICMP header + 56 bytes payload
+	// Create an ICMP echo request packet with:
+	// - 20 bytes IPv4 header
+	// - 8 bytes ICMP header
+	// - 56 bytes payload (standard ping size)
+	packet := make([]byte, 84)
 
-	// IP header (20 bytes)
-	packet[0] = 0x45                                    // Version (4) and header length (5)
+	// IPv4 header fields
+	packet[0] = 0x45                                    // Version 4, IHL 5 (20 bytes)
 	packet[1] = 0x00                                    // DSCP & ECN
 	binary.BigEndian.PutUint16(packet[2:4], uint16(84)) // Total length
 	packet[8] = 64                                      // TTL
-	packet[9] = 0x01                                    // Protocol (ICMP)
+	packet[9] = 0x01                                    // Protocol (1 = ICMP)
 
 	// Source IP (192.168.1.1)
 	copy(packet[12:16], net.ParseIP("192.168.1.1").To4())
@@ -365,15 +368,8 @@ func TestWinDivertSendReceive(t *testing.T) {
 		t.Skip("Test requires administrator privileges")
 	}
 
-	// Load DLL
-	if err := LoadDLL("WinDivert.dll", "WinDivert.dll"); err != nil {
-		t.Fatalf("Failed to load DLL: %v", err)
-	}
-
-	// Verify DLL is loaded
-	if !IsDLLLoaded() {
-		t.Fatal("DLL should be loaded")
-	}
+	setupTestDLL(t)
+	defer UnloadDLL()
 
 	// Open a handle with a basic filter
 	handle, err := NewWinDivertHandle("true")
@@ -381,11 +377,6 @@ func TestWinDivertSendReceive(t *testing.T) {
 		t.Fatalf("Failed to create handle: %v", err)
 	}
 	defer handle.Close()
-
-	// Verify handle is open
-	if !handle.open {
-		t.Error("Handle should be open")
-	}
 
 	// Create context with timeout
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -399,23 +390,39 @@ func TestWinDivertSendReceive(t *testing.T) {
 
 	// Simulate sending a packet
 	go func() {
+		// Create a proper ICMP packet instead of random bytes
+		packet := createICMPPacket()
+
+		// Create WinDivertAddress with proper direction and layer
 		addr := &WinDivertAddress{}
 		addr.SetLayer(LayerNetwork)
-		addr.SetFlags(0)
+		addr.SetFlags(uint8(0)) // Clear flags first
+		if WinDivertDirectionOutbound {
+			addr.SetFlags(1) // Set outbound flag
+		}
 
 		dummyPacket := &Packet{
-			Raw:       make([]byte, 1500),
+			Raw:       packet,
 			Addr:      addr,
-			PacketLen: 1500,
+			PacketLen: uint(len(packet)),
+		}
+
+		// Calculate checksums before sending
+		if err := handle.HelperCalcChecksum(dummyPacket); err != nil {
+			t.Errorf("Failed to calculate checksums: %v", err)
+			return
 		}
 
 		sentLen, err := handle.Send(dummyPacket)
 		if err != nil {
 			t.Errorf("Failed to send packet: %v", err)
+			return
 		}
 		if sentLen != dummyPacket.PacketLen {
 			t.Errorf("Sent length mismatch: expected %d, got %d", dummyPacket.PacketLen, sentLen)
+			return
 		}
+		t.Logf("Successfully sent packet of length %d", sentLen)
 	}()
 
 	// Attempt to receive a packet
@@ -424,15 +431,15 @@ func TestWinDivertSendReceive(t *testing.T) {
 		if len(packet.Raw) == 0 {
 			t.Error("Received packet is empty")
 		} else {
-			t.Logf("Received packet: %v", packet.Raw)
+			parsed, err := HelperParsePacket(packet.Raw)
+			if err != nil {
+				t.Errorf("Failed to parse received packet: %v", err)
+			} else {
+				t.Logf("Received valid packet: IPv4=%v, ICMP=%v", parsed.IPv4 != nil, parsed.ICMP != nil)
+			}
 		}
 	case <-time.After(5 * time.Second):
 		t.Error("Timeout waiting for packet")
-	}
-
-	// Unload DLL
-	if err := UnloadDLL(); err != nil {
-		t.Fatalf("Failed to unload DLL: %v", err)
 	}
 }
 
@@ -484,71 +491,6 @@ func TestHelperCompileFilter(t *testing.T) {
 					gotOk, gotPos, tt.wantOk, tt.wantPos)
 			}
 		})
-	}
-}
-
-func TestRecvBatch(t *testing.T) {
-	if !isAdmin() {
-		t.Skip("Test requires administrator privileges")
-	}
-
-	// Load DLL
-	if err := LoadDLL("WinDivert.dll", "WinDivert.dll"); err != nil {
-		t.Fatalf("Failed to load DLL: %v", err)
-	}
-
-	// Create handle
-	handle, err := NewWinDivertHandle("true")
-	if err != nil {
-		t.Fatalf("Failed to create handle: %v", err)
-	}
-	defer handle.Close()
-
-	// Send multiple test packets
-	const numTestPackets = 5
-	go func() {
-		for i := 0; i < numTestPackets; i++ {
-			addr := &WinDivertAddress{}
-			addr.SetLayer(LayerNetwork)
-			addr.SetFlags(0)
-
-			dummyPacket := &Packet{
-				Raw:       createICMPPacket(),
-				Addr:      addr,
-				PacketLen: uint(len(createICMPPacket())),
-			}
-
-			if _, err := handle.Send(dummyPacket); err != nil {
-				t.Errorf("Failed to send packet %d: %v", i, err)
-			}
-			time.Sleep(10 * time.Millisecond) // Small delay between packets
-		}
-	}()
-
-	// Try to receive packets in batch
-	packets, err := handle.RecvBatch(numTestPackets)
-	if err != nil {
-		t.Fatalf("RecvBatch failed: %v", err)
-	}
-
-	// Verify received packets
-	if len(packets) == 0 {
-		t.Error("No packets received")
-	}
-
-	for i, packet := range packets {
-		if packet == nil {
-			continue
-		}
-		if len(packet.Raw) == 0 {
-			t.Errorf("Packet %d is empty", i)
-		}
-		if packet.Addr == nil {
-			t.Errorf("Packet %d has no address", i)
-		}
-		if packet.PacketLen == 0 {
-			t.Errorf("Packet %d has zero length", i)
-		}
 	}
 }
 

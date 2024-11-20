@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"runtime"
 	"sync"
 	"syscall"
@@ -54,10 +55,6 @@ var (
 
 	// Protect DLL loading/unloading operations
 	dllMutex sync.RWMutex
-)
-
-const (
-	BatchFlag = 0x8 // WINDIVERT_FLAG_RECV_ONLY | WINDIVERT_FLAG_READ_ONLY
 )
 
 func init() {
@@ -429,7 +426,7 @@ func (wd *WinDivertHandle) Send(packet *Packet) (uint, error) {
 	// Calculate checksums before sending
 	if err := wd.HelperCalcChecksum(packet); err != nil {
 		// Log but don't fail on checksum errors
-		fmt.Printf("Warning: Checksum calculation failed: %v\n", err)
+		log.Printf("Warning: Checksum calculation failed: %v\n", err)
 	}
 
 	var sendLen uint32
@@ -928,46 +925,67 @@ func (wd *WinDivertHandle) RecvBatch(maxPackets int) ([]*Packet, error) {
 	// Allocate buffers for batch receive
 	packetBuffer := make([]byte, maxPackets*PacketBufferSize)
 	addresses := make([]WinDivertAddress, maxPackets)
-	lengths := make([]uint32, maxPackets)
+	var recvLen uint32
+	addrLen := uint32(unsafe.Sizeof(WinDivertAddress{}) * uintptr(maxPackets))
 
-	// Call WinDivertRecvEx with batch flags
+	// Call WinDivertRecvEx with correct parameter order
 	success, _, err := winDivertRecvEx.Call(
-		wd.handle,
-		uintptr(unsafe.Pointer(&packetBuffer[0])),
-		uintptr(len(packetBuffer)),
-		uintptr(unsafe.Pointer(&lengths[0])),
-		uintptr(BatchFlag), // Use batch mode
-		uintptr(unsafe.Pointer(&addresses[0])),
-		uintptr(unsafe.Pointer(&maxPackets)),
-		0, // No overlapped I/O
-	)
+		wd.handle, // handle
+		uintptr(unsafe.Pointer(&packetBuffer[0])), // pPacket
+		uintptr(len(packetBuffer)),                // packetLen
+		uintptr(unsafe.Pointer(&recvLen)),         // pRecvLen
+		0,                                         // flags (must be 0)
+		uintptr(unsafe.Pointer(&addresses[0])),    // pAddr
+		uintptr(unsafe.Pointer(&addrLen)),         // pAddrLen
+		0)                                         // lpOverlapped
 
 	if success == 0 {
+		if err == windows.ERROR_INSUFFICIENT_BUFFER {
+			return nil, fmt.Errorf("buffer too small for batch receive")
+		}
 		return nil, fmt.Errorf("WinDivertRecvEx failed: %v", err)
 	}
 
+	// Calculate number of packets received
+	numPackets := addrLen / uint32(unsafe.Sizeof(WinDivertAddress{}))
+
 	// Process received packets
-	packets := make([]*Packet, maxPackets)
+	packets := make([]*Packet, 0, numPackets)
 	offset := uint32(0)
 
-	for i := 0; i < maxPackets; i++ {
-		if lengths[i] == 0 {
-			break
+	// Calculate size per packet (total bytes divided by number of packets)
+	packetSize := recvLen / numPackets
+
+	for i := uint32(0); i < numPackets && offset < recvLen; i++ {
+		// Get packet data
+		var packetLen uint32
+		if i == numPackets-1 {
+			// Last packet gets all remaining bytes
+			packetLen = recvLen - offset
+		} else {
+			packetLen = packetSize
 		}
 
-		// Copy packet data to avoid buffer reuse issues
-		packetData := make([]byte, lengths[i])
-		copy(packetData, packetBuffer[offset:offset+lengths[i]])
+		// Validate packet length
+		if packetLen == 0 || offset+packetLen > recvLen {
+			continue
+		}
 
-		// Create packet struct
-		packets[i] = &Packet{
+		// Copy packet data
+		packetData := make([]byte, packetLen)
+		copy(packetData, packetBuffer[offset:offset+packetLen])
+
+		// Create packet struct with copied address
+		addrCopy := addresses[i]
+		packets = append(packets, &Packet{
 			Raw:       packetData,
-			Addr:      &addresses[i],
-			PacketLen: uint(lengths[i]),
-		}
+			Addr:      &addrCopy,
+			PacketLen: uint(packetLen),
+		})
 
-		offset += (lengths[i] + 3) & ^uint32(3) // Align to 4 bytes
+		// Move to next packet
+		offset += packetLen
 	}
 
-	return packets[:maxPackets], nil
+	return packets, nil
 }

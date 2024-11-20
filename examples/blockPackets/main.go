@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"net"
 	"time"
 
@@ -24,12 +25,16 @@ func main() {
 	}
 	defer winDivert.Close()
 
-	packetChan, err := winDivert.Packets()
+	// Create context with timeout
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Minute)
+	defer cancel()
+
+	packetChan, err := winDivert.Packets(ctx)
 	if err != nil {
 		panic(err)
 	}
 
 	go checkPacket(winDivert, packetChan)
 
-	time.Sleep(1 * time.Minute)
+	<-ctx.Done() // Wait for context to be done
 }

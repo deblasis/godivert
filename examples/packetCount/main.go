@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"time"
 
@@ -41,7 +42,11 @@ func main() {
 
 	fmt.Println("Starting")
 
-	packetChan, err := winDivert.Packets()
+	// Create context with timeout
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	packetChan, err := winDivert.Packets(ctx)
 	if err != nil {
 		panic(err)
 	}
@@ -52,11 +57,9 @@ func main() {
 		go checkPacket(winDivert, packetChan)
 	}
 
-	time.Sleep(15 * time.Second)
+	<-ctx.Done() // Wait for context to be done
 
 	fmt.Println("Stopping...")
-
 	fmt.Printf("Served: %d packets\n", served)
-
 	fmt.Printf("ICMPv4=%d ICMPv6=%d UDP=%d TCP=%d Unknown=%d", icmpv4, icmpv6, udp, tcp, unknown)
 }
