@@ -1,10 +1,17 @@
 # GoDivert
 
-Go bindings for [WinDivert](https://github.com/basil00/Divert).
+Go bindings for [WinDivert](https://github.com/basil00/Divert) v2.2.
 
 > Fork of [williamfhe/godivert](https://github.com/williamfhe/godivert) with some fixes and improvements.
+> This version is pinned to WinDivert 2.2 and implements all its features.
 
 WinDivert is a user-mode packet capture-and-divert package for Windows.
+
+## Requirements (these are my own, fork at will and/or PR to change)
+
+- WinDivert 2.2 (it might not work with other versions)
+- Windows with Administrator privileges
+- Go 1.19 or later
 
 ## Installation
 

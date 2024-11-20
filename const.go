@@ -3,7 +3,7 @@ package godivert
 type Direction bool
 
 const (
-	PacketBufferSize   = 1500
+	PacketBufferSize   = 2048
 	PacketChanCapacity = 256
 
 	WinDivertDirectionOutbound Direction = false

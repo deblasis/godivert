@@ -1,6 +1,8 @@
 package godivert
 
 import (
+	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"runtime"
@@ -9,19 +11,43 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/deblasis/godivert/header"
 	"golang.org/x/sys/windows"
 )
 
 var (
 	winDivertDLL *windows.LazyDLL
 
-	winDivertOpen                *windows.LazyProc
-	winDivertClose               *windows.LazyProc
-	winDivertRecv                *windows.LazyProc
-	winDivertSend                *windows.LazyProc
-	winDivertHelperCalcChecksums *windows.LazyProc
-	winDivertHelperEvalFilter    *windows.LazyProc
-	winDivertHelperCheckFilter   *windows.LazyProc
+	winDivertOpen     *windows.LazyProc
+	winDivertClose    *windows.LazyProc
+	winDivertRecv     *windows.LazyProc
+	winDivertRecvEx   *windows.LazyProc
+	winDivertSend     *windows.LazyProc
+	winDivertSendEx   *windows.LazyProc
+	winDivertShutdown *windows.LazyProc
+	winDivertSetParam *windows.LazyProc
+	winDivertGetParam *windows.LazyProc
+
+	winDivertHelperParsePacket       *windows.LazyProc
+	winDivertHelperParseIPv4Address  *windows.LazyProc
+	winDivertHelperParseIPv6Address  *windows.LazyProc
+	winDivertHelperFormatIPv4Address *windows.LazyProc
+	winDivertHelperFormatIPv6Address *windows.LazyProc
+	winDivertHelperCalcChecksums     *windows.LazyProc
+	winDivertHelperDecrementTTL      *windows.LazyProc
+	winDivertHelperCompileFilter     *windows.LazyProc
+	winDivertHelperEvalFilter        *windows.LazyProc
+	winDivertHelperFormatFilter      *windows.LazyProc
+
+	winDivertHelperHashPacket      *windows.LazyProc
+	winDivertHelperNtohs           *windows.LazyProc
+	winDivertHelperNtohl           *windows.LazyProc
+	winDivertHelperNtohll          *windows.LazyProc
+	winDivertHelperHtons           *windows.LazyProc
+	winDivertHelperHtonl           *windows.LazyProc
+	winDivertHelperHtonll          *windows.LazyProc
+	winDivertHelperNtohIPv6Address *windows.LazyProc
+	winDivertHelperHtonIPv6Address *windows.LazyProc
 
 	// Track if DLL is loaded
 	isDLLLoaded bool
@@ -30,9 +56,12 @@ var (
 	dllMutex sync.RWMutex
 )
 
+const (
+	BatchFlag = 0x8 // WINDIVERT_FLAG_RECV_ONLY | WINDIVERT_FLAG_READ_ONLY
+)
+
 func init() {
 	if err := LoadDLL("WinDivert.dll", "WinDivert.dll"); err != nil {
-		// Handle initialization error
 		panic(err)
 	}
 }
@@ -43,13 +72,24 @@ type WinDivertHandle struct {
 	open   bool
 }
 
+var packetBufferPool = sync.Pool{
+	New: func() interface{} {
+		b := make([]byte, PacketBufferSize)
+		return &b
+	},
+}
+
 // LoadDLL loads the WinDivert DLL and initializes the proc addresses
 func LoadDLL(path64, path32 string) error {
 	dllMutex.Lock()
 	defer dllMutex.Unlock()
 
 	if isDLLLoaded {
-		return nil // Already loaded
+		return nil
+	}
+
+	if path64 == "" || path32 == "" {
+		return errors.New("LoadDLL: empty DLL path provided")
 	}
 
 	var dllPath string
@@ -59,25 +99,127 @@ func LoadDLL(path64, path32 string) error {
 		dllPath = path32
 	}
 
-	// Load DLL
+	// Load DLL with detailed error checking
+	var err error
 	winDivertDLL = windows.NewLazyDLL(dllPath)
+	if err = winDivertDLL.Load(); err != nil {
+		return fmt.Errorf("failed to load WinDivert DLL: %v", err)
+	}
 
-	// Initialize proc addresses
-	winDivertOpen = winDivertDLL.NewProc("WinDivertOpen")
-	winDivertClose = winDivertDLL.NewProc("WinDivertClose")
-	winDivertRecv = winDivertDLL.NewProc("WinDivertRecv")
-	winDivertSend = winDivertDLL.NewProc("WinDivertSend")
-	winDivertHelperCalcChecksums = winDivertDLL.NewProc("WinDivertHelperCalcChecksums")
-	winDivertHelperEvalFilter = winDivertDLL.NewProc("WinDivertHelperEvalFilter")
-	winDivertHelperCheckFilter = winDivertDLL.NewProc("WinDivertHelperCheckFilter")
+	// Load each proc with error checking
+	procs := map[string]**windows.LazyProc{
+		// Core functions
+		"WinDivertOpen":     &winDivertOpen,
+		"WinDivertClose":    &winDivertClose,
+		"WinDivertRecv":     &winDivertRecv,
+		"WinDivertRecvEx":   &winDivertRecvEx,
+		"WinDivertSend":     &winDivertSend,
+		"WinDivertSendEx":   &winDivertSendEx,
+		"WinDivertShutdown": &winDivertShutdown,
+		"WinDivertSetParam": &winDivertSetParam,
+		"WinDivertGetParam": &winDivertGetParam,
+
+		// Helper functions
+		"WinDivertHelperParsePacket":       &winDivertHelperParsePacket,
+		"WinDivertHelperParseIPv4Address":  &winDivertHelperParseIPv4Address,
+		"WinDivertHelperParseIPv6Address":  &winDivertHelperParseIPv6Address,
+		"WinDivertHelperFormatIPv4Address": &winDivertHelperFormatIPv4Address,
+		"WinDivertHelperFormatIPv6Address": &winDivertHelperFormatIPv6Address,
+		"WinDivertHelperCalcChecksums":     &winDivertHelperCalcChecksums,
+		"WinDivertHelperDecrementTTL":      &winDivertHelperDecrementTTL,
+		"WinDivertHelperCompileFilter":     &winDivertHelperCompileFilter,
+		"WinDivertHelperEvalFilter":        &winDivertHelperEvalFilter,
+		"WinDivertHelperFormatFilter":      &winDivertHelperFormatFilter,
+		"WinDivertHelperHashPacket":        &winDivertHelperHashPacket,
+
+		// Byte order conversion helpers
+		"WinDivertHelperNtohs":           &winDivertHelperNtohs,
+		"WinDivertHelperNtohl":           &winDivertHelperNtohl,
+		"WinDivertHelperNtohll":          &winDivertHelperNtohll,
+		"WinDivertHelperHtons":           &winDivertHelperHtons,
+		"WinDivertHelperHtonl":           &winDivertHelperHtonl,
+		"WinDivertHelperHtonll":          &winDivertHelperHtonll,
+		"WinDivertHelperNtohIPv6Address": &winDivertHelperNtohIPv6Address,
+		"WinDivertHelperHtonIPv6Address": &winDivertHelperHtonIPv6Address,
+	}
+
+	// Clear all procs before loading new ones
+	clearAllProcs()
+
+	for name, proc := range procs {
+		*proc = winDivertDLL.NewProc(name)
+		if err = (*proc).Find(); err != nil {
+			// Just clear procs and return error, don't call UnloadDLL
+			clearAllProcs()
+			winDivertDLL = nil
+			isDLLLoaded = false
+			return fmt.Errorf("failed to find %s: %v", name, err)
+		}
+	}
 
 	isDLLLoaded = true
+	return nil
+}
 
-	// Register cleanup on program exit
-	runtime.SetFinalizer(winDivertDLL, func(dll *windows.LazyDLL) {
-		UnloadDLL()
-	})
+// Add this helper function to clear all procs
+func clearAllProcs() {
+	// Core functions
+	winDivertOpen = nil
+	winDivertClose = nil
+	winDivertRecv = nil
+	winDivertRecvEx = nil
+	winDivertSend = nil
+	winDivertSendEx = nil
+	winDivertShutdown = nil
+	winDivertSetParam = nil
+	winDivertGetParam = nil
 
+	// Helper functions
+	winDivertHelperParsePacket = nil
+	winDivertHelperParseIPv4Address = nil
+	winDivertHelperParseIPv6Address = nil
+	winDivertHelperFormatIPv4Address = nil
+	winDivertHelperFormatIPv6Address = nil
+	winDivertHelperCalcChecksums = nil
+	winDivertHelperDecrementTTL = nil
+	winDivertHelperCompileFilter = nil
+	winDivertHelperEvalFilter = nil
+	winDivertHelperFormatFilter = nil
+	winDivertHelperHashPacket = nil
+
+	// Byte order conversion helpers
+	winDivertHelperNtohs = nil
+	winDivertHelperNtohl = nil
+	winDivertHelperNtohll = nil
+	winDivertHelperHtons = nil
+	winDivertHelperHtonl = nil
+	winDivertHelperHtonll = nil
+	winDivertHelperNtohIPv6Address = nil
+	winDivertHelperHtonIPv6Address = nil
+}
+
+// CheckDLL verifies that the WinDivert driver is installed and accessible
+func CheckDLL() error {
+	dllMutex.RLock()
+	defer dllMutex.RUnlock()
+
+	if !isDLLLoaded {
+		return errors.New("WinDivert DLL not loaded")
+	}
+
+	// Verify driver is installed and accessible
+	handle, _, err := winDivertOpen.Call(
+		uintptr(unsafe.Pointer(syscall.StringToUTF16Ptr("false"))),
+		uintptr(LayerNetwork),
+		0,
+		0)
+
+	if handle == 0 {
+		return fmt.Errorf("failed to open test handle: %v (this often means the WinDivert driver isn't properly installed)", err)
+	}
+
+	// Close test handle
+	winDivertClose.Call(handle)
 	return nil
 }
 
@@ -94,10 +236,33 @@ func UnloadDLL() error {
 	winDivertOpen = nil
 	winDivertClose = nil
 	winDivertRecv = nil
+	winDivertRecvEx = nil
 	winDivertSend = nil
+	winDivertSendEx = nil
+	winDivertShutdown = nil
+	winDivertSetParam = nil
+	winDivertGetParam = nil
+
+	winDivertHelperParsePacket = nil
+	winDivertHelperParseIPv4Address = nil
+	winDivertHelperParseIPv6Address = nil
+	winDivertHelperFormatIPv4Address = nil
+	winDivertHelperFormatIPv6Address = nil
 	winDivertHelperCalcChecksums = nil
+	winDivertHelperDecrementTTL = nil
+	winDivertHelperCompileFilter = nil
 	winDivertHelperEvalFilter = nil
-	winDivertHelperCheckFilter = nil
+	winDivertHelperFormatFilter = nil
+
+	winDivertHelperHashPacket = nil
+	winDivertHelperNtohs = nil
+	winDivertHelperNtohl = nil
+	winDivertHelperNtohll = nil
+	winDivertHelperHtons = nil
+	winDivertHelperHtonl = nil
+	winDivertHelperHtonll = nil
+	winDivertHelperNtohIPv6Address = nil
+	winDivertHelperHtonIPv6Address = nil
 
 	// Clear DLL reference
 	winDivertDLL = nil
@@ -124,36 +289,53 @@ func isAdmin() bool {
 
 // Modify NewWinDivertHandle to check for admin rights
 func NewWinDivertHandle(filter string) (*WinDivertHandle, error) {
-	if !isAdmin() {
-		return nil, fmt.Errorf("administrator privileges required to create WinDivert handle")
-	}
-	return NewWinDivertHandleWithFlags(filter, 0)
-}
-
-// Also modify NewWinDivertHandleWithFlags
-func NewWinDivertHandleWithFlags(filter string, flags uint8) (*WinDivertHandle, error) {
-	if !isAdmin() {
-		return nil, fmt.Errorf("administrator privileges required to create WinDivert handle")
+	if !isDLLLoaded {
+		return nil, errors.New("WinDivert DLL not loaded")
 	}
 
-	filterBytePtr, err := syscall.BytePtrFromString(filter)
+	filterPtr, err := syscall.BytePtrFromString(filter)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("invalid filter string: %v", err)
 	}
 
-	handle, _, err := winDivertOpen.Call(uintptr(unsafe.Pointer(filterBytePtr)),
-		uintptr(0),
-		uintptr(0),
-		uintptr(flags))
+	// Verify filter syntax first
+	if ok, pos := HelperCompileFilter(filter); !ok {
+		return nil, fmt.Errorf("invalid filter at position %d", pos)
+	}
 
-	if handle == uintptr(syscall.InvalidHandle) {
-		return nil, err
+	// Open handle with detailed diagnostics
+	handle, _, err := winDivertOpen.Call(
+		uintptr(unsafe.Pointer(filterPtr)),
+		uintptr(LayerNetwork),
+		0, // Default priority
+		0) // Default flags
+
+	if handle == 0 {
+		// Get detailed Windows error
+		if errno, ok := err.(syscall.Errno); ok {
+			switch errno {
+			case 5:
+				return nil, errors.New("access denied - are you running as Administrator?")
+			case 577:
+				return nil, errors.New("driver not installed or started - check Windows Event Log")
+			case 87:
+				return nil, errors.New("invalid parameter - filter syntax error")
+			default:
+				return nil, fmt.Errorf("WinDivertOpen failed: %v (errno: %d)", err, errno)
+			}
+		}
+		return nil, fmt.Errorf("WinDivertOpen failed: %v", err)
 	}
 
 	winDivertHandle := &WinDivertHandle{
 		handle: handle,
 		open:   true,
 	}
+
+	runtime.SetFinalizer(winDivertHandle, func(h *WinDivertHandle) {
+		h.Close()
+	})
+
 	return winDivertHandle, nil
 }
 
@@ -184,86 +366,140 @@ func (wd *WinDivertHandle) Close() error {
 	return nil
 }
 
-// Divert a packet from the Network Stack
-// https://reqrypt.org/windivert-doc.html#divert_recv
+// Recv receives a packet from the network stack
 func (wd *WinDivertHandle) Recv() (*Packet, error) {
 	if !wd.open {
 		return nil, errors.New("can't receive, the handle isn't open")
 	}
 
+	packetBuffer := *packetBufferPool.Get().(*[]byte)
+	defer packetBufferPool.Put(&packetBuffer)
+
 	if winDivertRecv == nil {
 		return nil, errors.New("WinDivert DLL not loaded")
 	}
 
-	packetBuffer := make([]byte, PacketBufferSize)
-	var packetLen uint
+	var packetLen uint32
 	var addr WinDivertAddress
 
-	success, _, err := winDivertRecv.Call(wd.handle,
-		uintptr(unsafe.Pointer(&packetBuffer[0])),
-		uintptr(PacketBufferSize),
-		uintptr(unsafe.Pointer(&addr)),
-		uintptr(unsafe.Pointer(&packetLen)))
+	success, _, err := winDivertRecv.Call(
+		wd.handle, // handle
+		uintptr(unsafe.Pointer(&packetBuffer[0])), // pPacket
+		uintptr(PacketBufferSize),                 // packetLen
+		uintptr(unsafe.Pointer(&packetLen)),       // pRecvLen
+		uintptr(unsafe.Pointer(&addr)),            // pAddr
+	)
 
 	if success == 0 {
-		return nil, err
+		return nil, fmt.Errorf("WinDivertRecv failed: %v", err)
 	}
 
 	packet := &Packet{
 		Raw:       packetBuffer[:packetLen],
 		Addr:      &addr,
-		PacketLen: packetLen,
+		PacketLen: uint(packetLen),
 	}
 
 	return packet, nil
 }
 
-// Inject the packet on the Network Stack
-// https://reqrypt.org/windivert-doc.html#divert_send
+// Send injects a packet into the network stack
 func (wd *WinDivertHandle) Send(packet *Packet) (uint, error) {
 	if !wd.open {
-		return 0, errors.New("can't Send, the handle isn't open")
+		return 0, fmt.Errorf("Send: handle not open")
 	}
 
-	if winDivertSend == nil {
+	if packet == nil {
+		return 0, fmt.Errorf("Send: nil packet provided")
+	}
+
+	// Lock DLL access to prevent unloading while we're using it
+	dllMutex.RLock()
+	defer dllMutex.RUnlock()
+
+	if winDivertSend == nil || winDivertHelperCalcChecksums == nil {
 		return 0, errors.New("WinDivert DLL not loaded")
 	}
 
-	var sendLen uint
-	success, _, err := winDivertSend.Call(wd.handle,
-		uintptr(unsafe.Pointer(&(packet.Raw[0]))),
-		uintptr(packet.PacketLen),
-		uintptr(unsafe.Pointer(packet.Addr)),
-		uintptr(unsafe.Pointer(&sendLen)))
-
-	if success == 0 {
-		return 0, err
+	// Initialize WinDivertAddress if not set
+	if packet.Addr == nil {
+		packet.Addr = &WinDivertAddress{}
 	}
 
-	return sendLen, nil
+	// Set proper flags for sending
+	packet.Addr.SetLayer(LayerNetwork) // Network layer in upper 4 bits
+	packet.Addr.SetFlags(0)            // Clear flags in lower 4 bits
+
+	// Force outbound for sending
+	packet.Addr.Flags |= 0x1 // Set direction bit
+
+	// Calculate checksums before sending
+	if err := wd.HelperCalcChecksum(packet); err != nil {
+		// Ignore checksum errors as they're not critical
+		fmt.Printf("Warning: Checksum calculation failed: %v\n", err)
+	}
+
+	// Create a fixed buffer with the exact size and proper alignment
+	packetLen := uint32(packet.PacketLen)
+	alignedBuf := make([]byte, (packetLen+3) & ^uint32(3)) // Align to 4 bytes
+	copy(alignedBuf, packet.Raw[:packetLen])
+
+	// Pin the packet buffer to memory during the call
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+
+	var sendLen uint32
+	success, _, err := winDivertSend.Call(
+		wd.handle,
+		uintptr(unsafe.Pointer(&alignedBuf[0])),
+		uintptr(packetLen),
+		uintptr(unsafe.Pointer(packet.Addr)),
+		uintptr(unsafe.Pointer(&sendLen)),
+	)
+
+	if success == 0 {
+		return 0, fmt.Errorf("WinDivertSend failed: %v", err)
+	}
+
+	return uint(sendLen), nil
 }
 
-// Calls WinDivertHelperCalcChecksum to calculate the packet's chacksum
-// https://reqrypt.org/windivert-doc.html#divert_helper_calc_checksums
-func (wd *WinDivertHandle) HelperCalcChecksum(packet *Packet) {
-	winDivertHelperCalcChecksums.Call(
+// Calls WinDivertHelperCalcChecksum to calculate the packet's checksum
+func (wd *WinDivertHandle) HelperCalcChecksum(packet *Packet) error {
+	if winDivertHelperCalcChecksums == nil {
+		return errors.New("WinDivert DLL not loaded")
+	}
+
+	success, _, err := winDivertHelperCalcChecksums.Call(
 		uintptr(unsafe.Pointer(&packet.Raw[0])),
 		uintptr(packet.PacketLen),
-		uintptr(unsafe.Pointer(&packet.Addr)),
+		uintptr(unsafe.Pointer(packet.Addr)),
 		uintptr(0))
+
+	if success == 0 {
+		return fmt.Errorf("WinDivertHelperCalcChecksums failed: %v", err)
+	}
+	return nil
 }
 
 // Take the given filter and check if it contains any error
 // https://reqrypt.org/windivert-doc.html#divert_helper_check_filter
-func HelperCheckFilter(filter string) (bool, int) {
+func HelperCompileFilter(filter string) (bool, int) {
+	if !isDLLLoaded || winDivertHelperCompileFilter == nil {
+		return false, 0
+	}
+
+	var errorStr *byte
 	var errorPos uint
 
 	filterBytePtr, _ := syscall.BytePtrFromString(filter)
 
-	success, _, _ := winDivertHelperCheckFilter.Call(
+	success, _, _ := winDivertHelperCompileFilter.Call(
 		uintptr(unsafe.Pointer(filterBytePtr)),
-		uintptr(0),
-		uintptr(0), // Not implemented yet
+		uintptr(LayerNetwork),
+		0,
+		0,
+		uintptr(unsafe.Pointer(&errorStr)),
 		uintptr(unsafe.Pointer(&errorPos)))
 
 	if success == 1 {
@@ -310,11 +546,445 @@ func (wd *WinDivertHandle) recvLoop(packetChan chan<- *Packet) {
 }
 
 // Create a new channel that will be used to pass captured packets and returns it calls recvLoop to maintain a loop
-func (wd *WinDivertHandle) Packets() (chan *Packet, error) {
+func (wd *WinDivertHandle) Packets(ctx context.Context) (<-chan *Packet, error) {
 	if !wd.open {
 		return nil, errors.New("the handle isn't open")
 	}
+
 	packetChan := make(chan *Packet, PacketChanCapacity)
-	go wd.recvLoop(packetChan)
+
+	go func() {
+		defer close(packetChan)
+
+		for wd.open {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+				packet, err := wd.Recv()
+				if err != nil {
+					return
+				}
+				packetChan <- packet
+			}
+		}
+	}()
+
 	return packetChan, nil
+}
+
+// RecvEx receives a packet with extended options
+func (wd *WinDivertHandle) RecvEx(packet []byte, addr *WinDivertAddress, flags uint64, overlapped *windows.Overlapped) (uint, error) {
+	if !wd.open {
+		return 0, errors.New("handle not open")
+	}
+
+	dllMutex.RLock()
+	defer dllMutex.RUnlock()
+
+	if winDivertRecvEx == nil {
+		return 0, errors.New("WinDivert DLL not loaded")
+	}
+
+	var recvLen uint32
+	success, _, err := winDivertRecvEx.Call(
+		wd.handle,
+		uintptr(unsafe.Pointer(&packet[0])),
+		uintptr(len(packet)),
+		uintptr(unsafe.Pointer(&recvLen)),
+		uintptr(flags),
+		uintptr(unsafe.Pointer(addr)),
+		uintptr(unsafe.Pointer(&overlapped)),
+	)
+
+	if success == 0 {
+		return 0, fmt.Errorf("WinDivertRecvEx failed: %v", err)
+	}
+
+	return uint(recvLen), nil
+}
+
+// SendEx sends a packet with extended options
+func (wd *WinDivertHandle) SendEx(packet []byte, addr *WinDivertAddress, flags uint64, overlapped *windows.Overlapped) (uint, error) {
+	if !wd.open {
+		return 0, errors.New("handle not open")
+	}
+
+	dllMutex.RLock()
+	defer dllMutex.RUnlock()
+
+	if winDivertSendEx == nil {
+		return 0, errors.New("WinDivert DLL not loaded")
+	}
+
+	var sendLen uint32
+	success, _, err := winDivertSendEx.Call(
+		wd.handle,
+		uintptr(unsafe.Pointer(&packet[0])),
+		uintptr(len(packet)),
+		uintptr(unsafe.Pointer(&sendLen)),
+		uintptr(flags),
+		uintptr(unsafe.Pointer(addr)),
+		uintptr(unsafe.Pointer(overlapped)),
+	)
+
+	if success == 0 {
+		return 0, fmt.Errorf("WinDivertSendEx failed: %v", err)
+	}
+
+	return uint(sendLen), nil
+}
+
+// Shutdown shuts down the handle
+func (wd *WinDivertHandle) Shutdown(how uint) error {
+	if !wd.open {
+		return errors.New("handle not open")
+	}
+
+	dllMutex.RLock()
+	defer dllMutex.RUnlock()
+
+	if winDivertShutdown == nil {
+		return errors.New("WinDivert DLL not loaded")
+	}
+
+	success, _, err := winDivertShutdown.Call(
+		wd.handle,
+		uintptr(how),
+	)
+
+	if success == 0 {
+		return fmt.Errorf("WinDivertShutdown failed: %v", err)
+	}
+
+	return nil
+}
+
+// SetParam sets a WinDivert parameter
+func (wd *WinDivertHandle) SetParam(param uint, value uint64) error {
+	if !wd.open {
+		return errors.New("handle not open")
+	}
+
+	dllMutex.RLock()
+	defer dllMutex.RUnlock()
+
+	if winDivertSetParam == nil {
+		return errors.New("WinDivert DLL not loaded")
+	}
+
+	success, _, err := winDivertSetParam.Call(
+		wd.handle,
+		uintptr(param),
+		uintptr(value),
+	)
+
+	if success == 0 {
+		return fmt.Errorf("WinDivertSetParam failed: %v", err)
+	}
+
+	return nil
+}
+
+// GetParam gets a WinDivert parameter
+func (wd *WinDivertHandle) GetParam(param uint) (uint64, error) {
+	if !wd.open {
+		return 0, errors.New("handle not open")
+	}
+
+	dllMutex.RLock()
+	defer dllMutex.RUnlock()
+
+	if winDivertGetParam == nil {
+		return 0, errors.New("WinDivert DLL not loaded")
+	}
+
+	var value uint64
+	success, _, err := winDivertGetParam.Call(
+		wd.handle,
+		uintptr(param),
+		uintptr(unsafe.Pointer(&value)),
+	)
+
+	if success == 0 {
+		return 0, fmt.Errorf("WinDivertGetParam failed: %v", err)
+	}
+
+	return value, nil
+}
+
+// ParsedPacket represents a parsed network packet
+type ParsedPacket struct {
+	Raw    []byte
+	IPv4   *header.IPv4Header
+	IPv6   *header.IPv6Header
+	ICMP   *header.ICMPv4Header
+	ICMPv6 *header.ICMPv6Header
+	TCP    *header.TCPHeader
+	UDP    *header.UDPHeader
+}
+
+// HelperParsePacket parses a raw packet into its components
+func HelperParsePacket(packet []byte) (*ParsedPacket, error) {
+	if winDivertHelperParsePacket == nil {
+		return nil, errors.New("WinDivert DLL not loaded")
+	}
+
+	var ipHdr, ipv6Hdr, icmpHdr, icmpv6Hdr, tcpHdr, udpHdr unsafe.Pointer
+	var protocol uint8
+	var data unsafe.Pointer
+	var dataLen uint
+	var next unsafe.Pointer
+	var nextLen uint
+
+	success, _, err := winDivertHelperParsePacket.Call(
+		uintptr(unsafe.Pointer(&packet[0])),
+		uintptr(len(packet)),
+		uintptr(unsafe.Pointer(&ipHdr)),
+		uintptr(unsafe.Pointer(&ipv6Hdr)),
+		uintptr(unsafe.Pointer(&protocol)),
+		uintptr(unsafe.Pointer(&icmpHdr)),
+		uintptr(unsafe.Pointer(&icmpv6Hdr)),
+		uintptr(unsafe.Pointer(&tcpHdr)),
+		uintptr(unsafe.Pointer(&udpHdr)),
+		uintptr(unsafe.Pointer(&data)),
+		uintptr(unsafe.Pointer(&dataLen)),
+		uintptr(unsafe.Pointer(&next)),
+		uintptr(unsafe.Pointer(&nextLen)),
+	)
+
+	if success == 0 {
+		return nil, fmt.Errorf("WinDivertHelperParsePacket failed: %v", err)
+	}
+
+	return &ParsedPacket{
+		Raw:    packet,
+		IPv4:   (*header.IPv4Header)(ipHdr),
+		IPv6:   (*header.IPv6Header)(ipv6Hdr),
+		ICMP:   (*header.ICMPv4Header)(icmpHdr),
+		ICMPv6: (*header.ICMPv6Header)(icmpv6Hdr),
+		TCP:    (*header.TCPHeader)(tcpHdr),
+		UDP:    (*header.UDPHeader)(udpHdr),
+	}, nil
+}
+
+// HelperHashPacket calculates a 64-bit hash of the packet
+func HelperHashPacket(packet []byte, seed uint64) (uint64, error) {
+	if winDivertHelperHashPacket == nil {
+		return 0, errors.New("WinDivert DLL not loaded")
+	}
+
+	if len(packet) == 0 {
+		return 0, errors.New("empty packet")
+	}
+
+	// Call WinDivertHelperHashPacket and get return value directly
+	ret, _, err := winDivertHelperHashPacket.Call(
+		uintptr(unsafe.Pointer(&packet[0])),
+		uintptr(len(packet)),
+		uintptr(seed))
+
+	// Windows syscalls often return an error even on success
+	if err != nil && err != windows.ERROR_SUCCESS {
+		return 0, fmt.Errorf("WinDivertHelperHashPacket failed: %v", err)
+	}
+
+	return uint64(ret), nil
+}
+
+// HelperParseIPv4Address parses an IPv4 address string
+func HelperParseIPv4Address(addrStr string) (uint32, error) {
+	if winDivertHelperParseIPv4Address == nil {
+		return 0, errors.New("WinDivert DLL not loaded")
+	}
+
+	var addr uint32
+	addrPtr, err := syscall.BytePtrFromString(addrStr)
+	if err != nil {
+		return 0, err
+	}
+
+	success, _, err := winDivertHelperParseIPv4Address.Call(
+		uintptr(unsafe.Pointer(addrPtr)),
+		uintptr(unsafe.Pointer(&addr)),
+	)
+
+	if success == 0 {
+		return 0, fmt.Errorf("WinDivertHelperParseIPv4Address failed: %v", err)
+	}
+
+	return addr, nil
+}
+
+// HelperParseIPv6Address parses an IPv6 address string
+func HelperParseIPv6Address(addrStr string) ([4]uint32, error) {
+	if winDivertHelperParseIPv6Address == nil {
+		return [4]uint32{}, errors.New("WinDivert DLL not loaded")
+	}
+
+	var addr [4]uint32
+	addrPtr, err := syscall.BytePtrFromString(addrStr)
+	if err != nil {
+		return [4]uint32{}, err
+	}
+
+	success, _, err := winDivertHelperParseIPv6Address.Call(
+		uintptr(unsafe.Pointer(addrPtr)),
+		uintptr(unsafe.Pointer(&addr)),
+	)
+
+	if success == 0 {
+		return [4]uint32{}, fmt.Errorf("WinDivertHelperParseIPv6Address failed: %v", err)
+	}
+
+	return addr, nil
+}
+
+// HelperFormatIPv4Address formats an IPv4 address as a string
+func HelperFormatIPv4Address(addr uint32) (string, error) {
+	if winDivertHelperFormatIPv4Address == nil {
+		return "", errors.New("WinDivert DLL not loaded")
+	}
+
+	buf := make([]byte, 16)
+	success, _, err := winDivertHelperFormatIPv4Address.Call(
+		uintptr(addr),
+		uintptr(unsafe.Pointer(&buf[0])),
+		uintptr(len(buf)),
+	)
+
+	if success == 0 {
+		return "", fmt.Errorf("WinDivertHelperFormatIPv4Address failed: %v", err)
+	}
+
+	return string(buf[:bytes.IndexByte(buf, 0)]), nil
+}
+
+// HelperFormatIPv6Address formats an IPv6 address as a string
+func HelperFormatIPv6Address(addr [4]uint32) (string, error) {
+	if winDivertHelperFormatIPv6Address == nil {
+		return "", errors.New("WinDivert DLL not loaded")
+	}
+
+	buf := make([]byte, 46)
+	success, _, err := winDivertHelperFormatIPv6Address.Call(
+		uintptr(unsafe.Pointer(&addr)),
+		uintptr(unsafe.Pointer(&buf[0])),
+		uintptr(len(buf)),
+	)
+
+	if success == 0 {
+		return "", fmt.Errorf("WinDivertHelperFormatIPv6Address failed: %v", err)
+	}
+
+	return string(buf[:bytes.IndexByte(buf, 0)]), nil
+}
+
+// Byte order conversion helpers
+func HelperNtohs(x uint16) uint16 {
+	ret, _, _ := winDivertHelperNtohs.Call(uintptr(x))
+	return uint16(ret)
+}
+
+func HelperNtohl(x uint32) uint32 {
+	ret, _, _ := winDivertHelperNtohl.Call(uintptr(x))
+	return uint32(ret)
+}
+
+func HelperNtohll(x uint64) uint64 {
+	ret, _, _ := winDivertHelperNtohll.Call(uintptr(x))
+	return uint64(ret)
+}
+
+func HelperHtons(x uint16) uint16 {
+	ret, _, _ := winDivertHelperHtons.Call(uintptr(x))
+	return uint16(ret)
+}
+
+func HelperHtonl(x uint32) uint32 {
+	ret, _, _ := winDivertHelperHtonl.Call(uintptr(x))
+	return uint32(ret)
+}
+
+func HelperHtonll(x uint64) uint64 {
+	ret, _, _ := winDivertHelperHtonll.Call(uintptr(x))
+	return uint64(ret)
+}
+
+func HelperNtohIPv6Address(inAddr [4]uint32) [4]uint32 {
+	var outAddr [4]uint32
+	winDivertHelperNtohIPv6Address.Call(
+		uintptr(unsafe.Pointer(&inAddr)),
+		uintptr(unsafe.Pointer(&outAddr)),
+	)
+	return outAddr
+}
+
+func HelperHtonIPv6Address(inAddr [4]uint32) [4]uint32 {
+	var outAddr [4]uint32
+	winDivertHelperHtonIPv6Address.Call(
+		uintptr(unsafe.Pointer(&inAddr)),
+		uintptr(unsafe.Pointer(&outAddr)),
+	)
+	return outAddr
+}
+
+// RecvBatch receives multiple packets in a single call for better performance
+func (wd *WinDivertHandle) RecvBatch(maxPackets int) ([]*Packet, error) {
+	if !wd.open {
+		return nil, errors.New("handle not open")
+	}
+
+	dllMutex.RLock()
+	defer dllMutex.RUnlock()
+
+	if winDivertRecvEx == nil {
+		return nil, errors.New("WinDivert DLL not loaded")
+	}
+
+	// Allocate buffers for batch receive
+	packetBuffer := make([]byte, maxPackets*PacketBufferSize)
+	addresses := make([]WinDivertAddress, maxPackets)
+	lengths := make([]uint32, maxPackets)
+
+	// Call WinDivertRecvEx with batch flags
+	success, _, err := winDivertRecvEx.Call(
+		wd.handle,
+		uintptr(unsafe.Pointer(&packetBuffer[0])),
+		uintptr(len(packetBuffer)),
+		uintptr(unsafe.Pointer(&lengths[0])),
+		uintptr(BatchFlag), // Use batch mode
+		uintptr(unsafe.Pointer(&addresses[0])),
+		uintptr(unsafe.Pointer(&maxPackets)),
+		0, // No overlapped I/O
+	)
+
+	if success == 0 {
+		return nil, fmt.Errorf("WinDivertRecvEx failed: %v", err)
+	}
+
+	// Process received packets
+	packets := make([]*Packet, maxPackets)
+	offset := uint32(0)
+
+	for i := 0; i < maxPackets; i++ {
+		if lengths[i] == 0 {
+			break
+		}
+
+		// Copy packet data to avoid buffer reuse issues
+		packetData := make([]byte, lengths[i])
+		copy(packetData, packetBuffer[offset:offset+lengths[i]])
+
+		// Create packet struct
+		packets[i] = &Packet{
+			Raw:       packetData,
+			Addr:      &addresses[i],
+			PacketLen: uint(lengths[i]),
+		}
+
+		offset += (lengths[i] + 3) & ^uint32(3) // Align to 4 bytes
+	}
+
+	return packets[:maxPackets], nil
 }
