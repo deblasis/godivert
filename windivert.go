@@ -426,36 +426,19 @@ func (wd *WinDivertHandle) Send(packet *Packet) (uint, error) {
 		packet.Addr = &WinDivertAddress{}
 	}
 
-	// Set proper flags for sending
-	packet.Addr.SetLayer(LayerNetwork) // Network layer in upper 4 bits
-	packet.Addr.SetFlags(0)            // Clear flags in lower 4 bits
-
-	// Force outbound for sending
-	packet.Addr.Flags |= 0x1 // Set direction bit
-
 	// Calculate checksums before sending
 	if err := wd.HelperCalcChecksum(packet); err != nil {
-		// Ignore checksum errors as they're not critical
+		// Log but don't fail on checksum errors
 		fmt.Printf("Warning: Checksum calculation failed: %v\n", err)
 	}
-
-	// Create a fixed buffer with the exact size and proper alignment
-	packetLen := uint32(packet.PacketLen)
-	alignedBuf := make([]byte, (packetLen+3) & ^uint32(3)) // Align to 4 bytes
-	copy(alignedBuf, packet.Raw[:packetLen])
-
-	// Pin the packet buffer to memory during the call
-	runtime.LockOSThread()
-	defer runtime.UnlockOSThread()
 
 	var sendLen uint32
 	success, _, err := winDivertSend.Call(
 		wd.handle,
-		uintptr(unsafe.Pointer(&alignedBuf[0])),
-		uintptr(packetLen),
-		uintptr(unsafe.Pointer(packet.Addr)),
+		uintptr(unsafe.Pointer(&packet.Raw[0])),
+		uintptr(packet.PacketLen),
 		uintptr(unsafe.Pointer(&sendLen)),
-	)
+		uintptr(unsafe.Pointer(packet.Addr)))
 
 	if success == 0 {
 		return 0, fmt.Errorf("WinDivertSend failed: %v", err)
