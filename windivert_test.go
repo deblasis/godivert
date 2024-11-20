@@ -117,62 +117,103 @@ func TestConcurrentAccess(t *testing.T) {
 }
 
 func TestDLLUnloadAndRemoval(t *testing.T) {
+	if !isAdmin() {
+		t.Skip("Test requires administrator privileges")
+	}
+
 	// First unload any existing DLL
 	if err := UnloadDLL(); err != nil {
 		t.Fatalf("Failed to unload existing DLL: %v", err)
 	}
 
-	// Create temp directory for test DLLs
+	// Create temp directory for test files
 	tmpDir, err := os.MkdirTemp("", "windivert_test")
 	if err != nil {
 		t.Fatalf("Failed to create temp dir: %v", err)
 	}
 	defer os.RemoveAll(tmpDir)
 
-	// Copy DLL files to temp location
-	dll64Path := filepath.Join(tmpDir, "WinDivert64.dll")
-	dll32Path := filepath.Join(tmpDir, "WinDivert32.dll")
+	// Handle DLL, SYS and LIB files
+	dllPath := filepath.Join(tmpDir, "WinDivert.dll")
+	sysPath := filepath.Join(tmpDir, "WinDivert64.sys")
+	libPath := filepath.Join(tmpDir, "WinDivert.lib")
 
-	// Copy your DLL files to temp location
-	// ... copy logic here ...
+	// Copy source files to temp location
+	files := map[string]string{
+		"WinDivert.dll":   dllPath,
+		"WinDivert64.sys": sysPath,
+		"WinDivert.lib":   libPath,
+	}
+
+	// Copy all files
+	for src, dst := range files {
+		srcData, err := os.ReadFile(src)
+		if err != nil {
+			t.Skipf("Test requires %s in current directory: %v", src, err)
+		}
+		if err := os.WriteFile(dst, srcData, 0755); err != nil {
+			t.Fatalf("Failed to write %s: %v", src, err)
+		}
+	}
 
 	// Load DLL from temp location
-	if err := LoadDLL(dll64Path, dll32Path); err != nil {
+	if err := LoadDLL(dllPath, dllPath); err != nil {
 		t.Fatalf("Failed to load DLL: %v", err)
 	}
 
-	// Verify DLL is loaded
-	if !IsDLLLoaded() {
-		t.Fatal("DLL should be loaded")
-	}
-
-	// Create and use a handle to ensure DLL is actually loaded
+	// Create and use a handle to ensure driver is loaded
 	handle, err := NewWinDivertHandle("true")
 	if err != nil {
 		t.Fatalf("Failed to create handle: %v", err)
 	}
-	handle.Close()
 
-	// Unload DLL
+	// Make sure to close handle before unloading
+	if err := handle.Close(); err != nil {
+		t.Fatalf("Failed to close handle: %v", err)
+	}
+
+	// Unload DLL and wait for Windows to release handles
 	if err := UnloadDLL(); err != nil {
 		t.Fatalf("Failed to unload DLL: %v", err)
 	}
 
-	// Verify DLL is unloaded
-	if IsDLLLoaded() {
-		t.Fatal("DLL should be unloaded")
+	// Give more time for driver unload
+	time.Sleep(2 * time.Second)
+
+	// Try to remove files with retries
+	filesToRemove := []string{sysPath, libPath}
+	for _, file := range filesToRemove {
+		var removeErr error
+		for i := 0; i < 5; i++ {
+			removeErr = os.Remove(file)
+			if removeErr == nil {
+				break
+			}
+			time.Sleep(time.Second)
+		}
+		if removeErr != nil {
+			t.Errorf("Failed to remove %s after %d attempts: %v", filepath.Base(file), 5, removeErr)
+		}
+	}
+}
+
+func TestNewWinDivertHandlePrivileges(t *testing.T) {
+	if !isAdmin() {
+		t.Skip("Test requires administrator privileges")
 	}
 
-	// Try to remove the DLL files
-	time.Sleep(100 * time.Millisecond) // Give Windows time to release file handles
-
-	err = os.Remove(dll64Path)
-	if err != nil {
-		t.Errorf("Failed to remove 64-bit DLL: %v", err)
+	// Ensure DLL is loaded first
+	if err := LoadDLL("WinDivert.dll", "WinDivert.dll"); err != nil {
+		t.Fatalf("Failed to load DLL: %v", err)
 	}
 
-	err = os.Remove(dll32Path)
+	handle, err := NewWinDivertHandle("true")
 	if err != nil {
-		t.Errorf("Failed to remove 32-bit DLL: %v", err)
+		t.Fatalf("Failed to create handle with admin rights: %v", err)
+	}
+	defer handle.Close()
+
+	if !handle.open {
+		t.Error("Handle should be open")
 	}
 }

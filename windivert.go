@@ -2,9 +2,11 @@ package godivert
 
 import (
 	"errors"
+	"fmt"
 	"runtime"
 	"sync"
 	"syscall"
+	"time"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -97,9 +99,12 @@ func UnloadDLL() error {
 	winDivertHelperEvalFilter = nil
 	winDivertHelperCheckFilter = nil
 
-	// Just set references to nil - DLL will be unloaded on process exit
+	// Clear DLL reference
 	winDivertDLL = nil
 	isDLLLoaded = false
+
+	// Give Windows time to cleanup
+	time.Sleep(100 * time.Millisecond)
 
 	return nil
 }
@@ -111,18 +116,26 @@ func IsDLLLoaded() bool {
 	return isDLLLoaded
 }
 
-// Create a new WinDivertHandle by calling WinDivertOpen and returns it
-// The string parameter is the fiter that packets have to match
-// https://reqrypt.org/windivert-doc.html#divert_open
+// Add this helper function to check for admin privileges
+func isAdmin() bool {
+	token := windows.GetCurrentProcessToken()
+	return token.IsElevated()
+}
+
+// Modify NewWinDivertHandle to check for admin rights
 func NewWinDivertHandle(filter string) (*WinDivertHandle, error) {
+	if !isAdmin() {
+		return nil, fmt.Errorf("administrator privileges required to create WinDivert handle")
+	}
 	return NewWinDivertHandleWithFlags(filter, 0)
 }
 
-// Create a new WinDivertHandle by calling WinDivertOpen and returns it
-// The string parameter is the fiter that packets have to match
-// and flags are the used flags used
-// https://reqrypt.org/windivert-doc.html#divert_open
+// Also modify NewWinDivertHandleWithFlags
 func NewWinDivertHandleWithFlags(filter string, flags uint8) (*WinDivertHandle, error) {
+	if !isAdmin() {
+		return nil, fmt.Errorf("administrator privileges required to create WinDivert handle")
+	}
+
 	filterBytePtr, err := syscall.BytePtrFromString(filter)
 	if err != nil {
 		return nil, err
@@ -147,9 +160,28 @@ func NewWinDivertHandleWithFlags(filter string, flags uint8) (*WinDivertHandle, 
 // Close the Handle
 // See https://reqrypt.org/windivert-doc.html#divert_close
 func (wd *WinDivertHandle) Close() error {
-	_, _, err := winDivertClose.Call(wd.handle)
+	if !wd.open {
+		return nil
+	}
+
+	// Check if DLL is loaded and proc is available
+	dllMutex.RLock()
+	if !isDLLLoaded || winDivertClose == nil {
+		dllMutex.RUnlock()
+		return errors.New("WinDivert DLL not loaded")
+	}
+
+	// Keep the lock until we're done with the proc
+	ret, _, err := winDivertClose.Call(wd.handle)
+	dllMutex.RUnlock()
+
+	if ret == 0 { // WinDivert functions return 0 on failure
+		return fmt.Errorf("WinDivertClose failed: %v", err)
+	}
+
 	wd.open = false
-	return err
+	wd.handle = 0 // Clear the handle
+	return nil
 }
 
 // Divert a packet from the Network Stack
@@ -159,10 +191,14 @@ func (wd *WinDivertHandle) Recv() (*Packet, error) {
 		return nil, errors.New("can't receive, the handle isn't open")
 	}
 
-	packetBuffer := make([]byte, PacketBufferSize)
+	if winDivertRecv == nil {
+		return nil, errors.New("WinDivert DLL not loaded")
+	}
 
+	packetBuffer := make([]byte, PacketBufferSize)
 	var packetLen uint
 	var addr WinDivertAddress
+
 	success, _, err := winDivertRecv.Call(wd.handle,
 		uintptr(unsafe.Pointer(&packetBuffer[0])),
 		uintptr(PacketBufferSize),
@@ -185,12 +221,15 @@ func (wd *WinDivertHandle) Recv() (*Packet, error) {
 // Inject the packet on the Network Stack
 // https://reqrypt.org/windivert-doc.html#divert_send
 func (wd *WinDivertHandle) Send(packet *Packet) (uint, error) {
-	var sendLen uint
-
 	if !wd.open {
 		return 0, errors.New("can't Send, the handle isn't open")
 	}
 
+	if winDivertSend == nil {
+		return 0, errors.New("WinDivert DLL not loaded")
+	}
+
+	var sendLen uint
 	success, _, err := winDivertSend.Call(wd.handle,
 		uintptr(unsafe.Pointer(&(packet.Raw[0]))),
 		uintptr(packet.PacketLen),
