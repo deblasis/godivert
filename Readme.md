@@ -2,17 +2,19 @@
 
 Go bindings for [WinDivert](https://github.com/basil00/Divert).
 
+> Fork of [williamfhe/godivert](https://github.com/williamfhe/godivert) with some fixes and improvements.
+
 WinDivert is a user-mode packet capture-and-divert package for Windows.
 
 ## Installation
 
 ```bash
-go get github.com/williamfhe/godivert
+go get github.com/deblasis/godivert
 ```
 
 ## Introduction
 
-The binding's documentation can be found [Here](https://godoc.org/github.com/williamfhe/godivert).
+The binding's documentation can be found [Here](https://godoc.org/github.com/deblasis/godivert).
 
 If you don't have the **WinDivert dll** installed on your System or you want to load a specific **WinDivert dll** you should do :
 
@@ -48,7 +50,7 @@ packet.SetDstPort(1234) // Sets the destination port
 packet.Send(winDivert) // Sends the packet back on the network stack
 ```
 
-You can get and set values from the packet's header by using the **_header_** package. Documentation on this package can be found [Here](https://godoc.org/github.com/williamfhe/godivert/header)
+You can get and set values from the packet's header by using the **_header_** package. Documentation on this package can be found [Here](https://godoc.org/github.com/deblasis/godivert/header)
 .
 
 As the packet has been modified the **checksums** have to be recalculated before sending it back on the network stack.
@@ -74,7 +76,7 @@ package main
 
 import (
     "fmt"
-    "github.com/williamfhe/godivert"
+    "github.com/deblasis/godivert"
 )
 
 func main() {
@@ -106,7 +108,7 @@ package main
 import (
     "net"
     "time"
-    "github.com/williamfhe/godivert"
+    "github.com/deblasis/godivert"
 )
 
 var cloudflareDNS = net.ParseIP("1.1.1.1")
@@ -153,8 +155,8 @@ package main
 import (
     "fmt"
     "time"
-    "github.com/williamfhe/godivert"
-    "github.com/williamfhe/godivert/header"
+    "github.com/deblasis/godivert"
+    "github.com/deblasis/godivert/header"
 )
 
 var icmpv4, icmpv6, udp, tcp, unknown, served uint

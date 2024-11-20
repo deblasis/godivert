@@ -2,8 +2,9 @@ package godivert
 
 import (
 	"fmt"
-	"github.com/williamfhe/godivert/header"
 	"net"
+
+	"github.com/deblasis/godivert/header"
 )
 
 // Represents a packet

@@ -2,7 +2,8 @@ package main
 
 import (
 	"fmt"
-	"github.com/williamfhe/godivert"
+
+	"github.com/deblasis/godivert"
 )
 
 func main() {
@@ -19,5 +20,5 @@ func main() {
 
 	fmt.Println(packet)
 
-    packet.Send(winDivert)
+	packet.Send(winDivert)
 }
