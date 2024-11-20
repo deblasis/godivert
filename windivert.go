@@ -3,24 +3,36 @@ package godivert
 import (
 	"errors"
 	"runtime"
+	"sync"
 	"syscall"
 	"unsafe"
+
+	"golang.org/x/sys/windows"
 )
 
 var (
-	winDivertDLL *syscall.LazyDLL
+	winDivertDLL *windows.LazyDLL
 
-	winDivertOpen                *syscall.LazyProc
-	winDivertClose               *syscall.LazyProc
-	winDivertRecv                *syscall.LazyProc
-	winDivertSend                *syscall.LazyProc
-	winDivertHelperCalcChecksums *syscall.LazyProc
-	winDivertHelperEvalFilter    *syscall.LazyProc
-	winDivertHelperCheckFilter   *syscall.LazyProc
+	winDivertOpen                *windows.LazyProc
+	winDivertClose               *windows.LazyProc
+	winDivertRecv                *windows.LazyProc
+	winDivertSend                *windows.LazyProc
+	winDivertHelperCalcChecksums *windows.LazyProc
+	winDivertHelperEvalFilter    *windows.LazyProc
+	winDivertHelperCheckFilter   *windows.LazyProc
+
+	// Track if DLL is loaded
+	isDLLLoaded bool
+
+	// Protect DLL loading/unloading operations
+	dllMutex sync.RWMutex
 )
 
 func init() {
-	LoadDLL("WinDivert.dll", "WinDivert.dll")
+	if err := LoadDLL("WinDivert.dll", "WinDivert.dll"); err != nil {
+		// Handle initialization error
+		panic(err)
+	}
 }
 
 // Used to call WinDivert's functions
@@ -29,19 +41,26 @@ type WinDivertHandle struct {
 	open   bool
 }
 
-// LoadDLL loads the WinDivert DLL depending the OS (x64 or x86) and the given DLL path.
-// The path can be a relative path (from the .exe folder) or absolute path.
-func LoadDLL(path64, path32 string) {
-	var dllPath string
+// LoadDLL loads the WinDivert DLL and initializes the proc addresses
+func LoadDLL(path64, path32 string) error {
+	dllMutex.Lock()
+	defer dllMutex.Unlock()
 
+	if isDLLLoaded {
+		return nil // Already loaded
+	}
+
+	var dllPath string
 	if runtime.GOARCH == "amd64" {
 		dllPath = path64
 	} else {
 		dllPath = path32
 	}
 
-	winDivertDLL = syscall.NewLazyDLL(dllPath)
+	// Load DLL
+	winDivertDLL = windows.NewLazyDLL(dllPath)
 
+	// Initialize proc addresses
 	winDivertOpen = winDivertDLL.NewProc("WinDivertOpen")
 	winDivertClose = winDivertDLL.NewProc("WinDivertClose")
 	winDivertRecv = winDivertDLL.NewProc("WinDivertRecv")
@@ -49,6 +68,47 @@ func LoadDLL(path64, path32 string) {
 	winDivertHelperCalcChecksums = winDivertDLL.NewProc("WinDivertHelperCalcChecksums")
 	winDivertHelperEvalFilter = winDivertDLL.NewProc("WinDivertHelperEvalFilter")
 	winDivertHelperCheckFilter = winDivertDLL.NewProc("WinDivertHelperCheckFilter")
+
+	isDLLLoaded = true
+
+	// Register cleanup on program exit
+	runtime.SetFinalizer(winDivertDLL, func(dll *windows.LazyDLL) {
+		UnloadDLL()
+	})
+
+	return nil
+}
+
+// UnloadDLL cleans up resources associated with the WinDivert DLL
+func UnloadDLL() error {
+	dllMutex.Lock()
+	defer dllMutex.Unlock()
+
+	if !isDLLLoaded {
+		return nil
+	}
+
+	// Reset proc addresses to nil
+	winDivertOpen = nil
+	winDivertClose = nil
+	winDivertRecv = nil
+	winDivertSend = nil
+	winDivertHelperCalcChecksums = nil
+	winDivertHelperEvalFilter = nil
+	winDivertHelperCheckFilter = nil
+
+	// Just set references to nil - DLL will be unloaded on process exit
+	winDivertDLL = nil
+	isDLLLoaded = false
+
+	return nil
+}
+
+// Helper to check if DLL is loaded
+func IsDLLLoaded() bool {
+	dllMutex.RLock()
+	defer dllMutex.RUnlock()
+	return isDLLLoaded
 }
 
 // Create a new WinDivertHandle by calling WinDivertOpen and returns it

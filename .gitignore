@@ -14,3 +14,8 @@
 # IDE and editors
 .idea
 .vscode
+
+# WinDivert DLLs
+WinDivert.dll
+WinDivert.lib
+WinDivert64.sys
