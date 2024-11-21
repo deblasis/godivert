@@ -112,7 +112,7 @@ jobs:
 
       - name: Upload badge to Gist
         if: github.ref == 'refs/heads/master'
-        uses: andymckay/append-gist-action@1.0.0
+        uses: andymckay/append-gist-action@0.3
         with:
           token: ${{ secrets.GIST_TOKEN }}
           gistURL: https://gist.github.com/deblasis/f0b1a69791fef8a99570926866124677 # Replace with your gist ID
