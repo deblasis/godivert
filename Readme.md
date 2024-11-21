@@ -1,5 +1,7 @@
 # GoDivert
 
+[![Tests](https://github.com/deblasis/godivert/actions/workflows/test.yml/badge.svg)](https://github.com/deblasis/godivert/actions/workflows/test.yml)
+
 Go bindings for [WinDivert](https://github.com/basil00/Divert) v2.2.
 
 > Fork of [williamfhe/godivert](https://github.com/williamfhe/godivert) with some fixes and improvements.
