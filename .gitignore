@@ -19,3 +19,7 @@
 WinDivert.dll
 WinDivert.lib
 WinDivert64.sys
+
+# Test results
+test-output.json
+test-results.xml
