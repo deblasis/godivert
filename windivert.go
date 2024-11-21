@@ -57,12 +57,6 @@ var (
 	dllMutex sync.RWMutex
 )
 
-func init() {
-	if err := LoadDLL("WinDivert.dll", "WinDivert.dll"); err != nil {
-		panic(err)
-	}
-}
-
 // Used to call WinDivert's functions
 type WinDivertHandle struct {
 	handle uintptr
