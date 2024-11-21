@@ -51,7 +51,7 @@ func (h *IPv4Header) Version() int {
 
 // Reads the header's bytes and returns its length
 func (h *IPv4Header) HeaderLen() uint8 {
-	return (h.Raw[0] & 0xf) << 2
+	return h.Raw[0] & 0xf << 2
 }
 
 // Reads the header's bytes and returns the Type Of Service
@@ -91,17 +91,22 @@ func (h *IPv4Header) NextHeader() uint8 {
 
 // Reads the header's bytes and returns the Checksum
 func (h *IPv4Header) Checksum() (uint16, error) {
-	return binary.BigEndian.Uint16(h.Raw[10:12]), nil
+	return uint16(h.Raw[10])<<8 | uint16(h.Raw[11]), nil
 }
 
 // Reads the header's bytes and returns the source IP
 func (h *IPv4Header) SrcIP() net.IP {
-	return net.IPv4(h.Raw[12], h.Raw[13], h.Raw[14], h.Raw[15])
+	// Reuse static IP to avoid allocations
+	ip := make([]byte, net.IPv4len)
+	copy(ip, h.Raw[IPv4_SRCIP_OFFSET:IPv4_SRCIP_OFFSET+net.IPv4len])
+	return ip
 }
 
 // Reads the header's bytes and returns the destination IP
 func (h *IPv4Header) DstIP() net.IP {
-	return net.IPv4(h.Raw[16], h.Raw[17], h.Raw[18], h.Raw[19])
+	ip := make([]byte, net.IPv4len)
+	copy(ip, h.Raw[IPv4_DSTIP_OFFSET:IPv4_DSTIP_OFFSET+net.IPv4len])
+	return ip
 }
 
 // Reads the header's bytes and returns the options as a byte slice if they exist or nil
@@ -117,13 +122,17 @@ func (h *IPv4Header) Options() []byte {
 // Sets the source IP of the packet
 func (h *IPv4Header) SetSrcIP(ip net.IP) {
 	h.Modified = true
-	copy(h.Raw[12:16], ip[12:16])
+	if ip4 := ip.To4(); ip4 != nil {
+		copy(h.Raw[IPv4_SRCIP_OFFSET:IPv4_SRCIP_OFFSET+net.IPv4len], ip4)
+	}
 }
 
 // Sets the destination IP of the packet
 func (h *IPv4Header) SetDstIP(ip net.IP) {
 	h.Modified = true
-	copy(h.Raw[16:20], ip[12:16])
+	if ip4 := ip.To4(); ip4 != nil {
+		copy(h.Raw[IPv4_DSTIP_OFFSET:IPv4_DSTIP_OFFSET+net.IPv4len], ip4)
+	}
 }
 
 // Returns true if the header has been modified

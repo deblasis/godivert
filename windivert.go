@@ -424,31 +424,34 @@ func (wd *WinDivertHandle) Recv() (*Packet, error) {
 		return nil, errors.New("WinDivert DLL not loaded")
 	}
 
-	packetBufferPtr := packetBufferPool.Get().(*[]byte)
-	packetBuffer := *packetBufferPtr
-	defer packetBufferPool.Put(packetBufferPtr)
+	packetBuffer := GetBuffer(defaultBufferSize)
+	defer PutBuffer(packetBuffer)
 
 	var packetLen uint32
 	var addr WinDivertAddress
 
 	success, _, err := winDivertRecv.Call(
-		wd.handle, // handle
-		uintptr(unsafe.Pointer(&packetBuffer[0])), // pPacket
-		uintptr(PacketBufferSize),                 // packetLen
-		uintptr(unsafe.Pointer(&packetLen)),       // pRecvLen
-		uintptr(unsafe.Pointer(&addr)),            // pAddr
+		wd.handle,
+		uintptr(unsafe.Pointer(&packetBuffer[0])),
+		uintptr(defaultBufferSize),
+		uintptr(unsafe.Pointer(&packetLen)),
+		uintptr(unsafe.Pointer(&addr)),
 	)
 
 	if success == 0 {
 		return nil, fmt.Errorf("WinDivertRecv failed: %v", err)
 	}
 
-	if packetLen > uint32(PacketBufferSize) {
-		return nil, fmt.Errorf("received packet length %d exceeds buffer size %d", packetLen, PacketBufferSize)
+	if packetLen > uint32(defaultBufferSize) {
+		return nil, fmt.Errorf("received packet length %d exceeds buffer size %d", packetLen, defaultBufferSize)
 	}
 
+	// Get a new buffer of exact size needed
+	finalBuffer := GetBuffer(int(packetLen))
+	copy(finalBuffer, packetBuffer[:packetLen])
+
 	packet := &Packet{
-		Raw:       packetBuffer[:packetLen],
+		Raw:       finalBuffer,
 		Addr:      &addr,
 		PacketLen: uint(packetLen),
 	}

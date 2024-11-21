@@ -26,6 +26,10 @@ type Packet struct {
 
 // Parse the packet's headers
 func (p *Packet) ParseHeaders() {
+	if p.parsed {
+		return
+	}
+
 	// Handle empty packets
 	if len(p.Raw) == 0 {
 		p.ipVersion = 0
@@ -114,81 +118,160 @@ func (p *Packet) NextHeaderType() uint8 {
 // Returns the source IP of the packet
 // Shortcut for IpHdr.SrcIP()
 func (p *Packet) SrcIP() net.IP {
-	p.VerifyParsed()
-
+	if !p.parsed {
+		p.ParseHeaders()
+	}
+	// Safety check after parsing
+	if len(p.Raw) < 16 { // Minimum size needed for IPv4 header
+		return nil
+	}
+	// Direct array access for IPv4
+	if p.ipVersion == 4 {
+		return net.IPv4(p.Raw[12], p.Raw[13], p.Raw[14], p.Raw[15])
+	}
+	// IPv6 needs more complex handling
 	return p.IpHdr.SrcIP()
 }
 
 // Sets the source IP of the packet
-// Shortcut for IpHdr.SetSrcIP()
 func (p *Packet) SetSrcIP(ip net.IP) {
-	p.VerifyParsed()
-
+	if !p.parsed {
+		p.ParseHeaders()
+	}
+	if p.ipVersion == 4 {
+		if ip4 := ip.To4(); ip4 != nil {
+			p.Raw[12] = ip4[0]
+			p.Raw[13] = ip4[1]
+			p.Raw[14] = ip4[2]
+			p.Raw[15] = ip4[3]
+			p.IpHdr.(*header.IPv4Header).Modified = true
+			return
+		}
+	}
 	p.IpHdr.SetSrcIP(ip)
 }
 
 // Returns the destination IP of the packet
 // Shortcut for IpHdr.DstIP()
 func (p *Packet) DstIP() net.IP {
-	p.VerifyParsed()
-
+	if !p.parsed {
+		p.ParseHeaders()
+	}
+	// Safety check after parsing
+	if len(p.Raw) < 20 { // Minimum size needed for IPv4 header
+		return nil
+	}
+	// Direct array access for IPv4
+	if p.ipVersion == 4 {
+		return net.IPv4(p.Raw[16], p.Raw[17], p.Raw[18], p.Raw[19])
+	}
+	// IPv6 needs more complex handling
 	return p.IpHdr.DstIP()
 }
 
 // Sets the destination IP of the packet
-// Shortcut for IpHdr.SetDstIP()
 func (p *Packet) SetDstIP(ip net.IP) {
-	p.VerifyParsed()
-
+	if !p.parsed {
+		p.ParseHeaders()
+	}
+	if p.ipVersion == 4 {
+		p.Raw[16] = ip[12]
+		p.Raw[17] = ip[13]
+		p.Raw[18] = ip[14]
+		p.Raw[19] = ip[15]
+		p.IpHdr.(*header.IPv4Header).Modified = true
+		return
+	}
 	p.IpHdr.SetDstIP(ip)
 }
 
 // Returns the source port of the packet
 // Shortcut for NextHeader.SrcPort()
 func (p *Packet) SrcPort() (uint16, error) {
-	p.VerifyParsed()
-
+	if !p.parsed {
+		p.ParseHeaders()
+	}
 	if p.NextHeader == nil {
 		return 0, fmt.Errorf("cannot get source port on protocolID=%d, protocol not implemented", p.nextHeaderType)
 	}
-
+	// Safety check for minimum header size
+	if len(p.Raw) < p.hdrLen+2 {
+		return 0, fmt.Errorf("packet too short for source port")
+	}
+	// Fast path for TCP/UDP
+	if p.nextHeaderType == header.TCP || p.nextHeaderType == header.UDP {
+		return binary.BigEndian.Uint16(p.Raw[p.hdrLen : p.hdrLen+2]), nil
+	}
 	return p.NextHeader.SrcPort()
 }
 
 // Sets the source port of the packet
 // Shortcut for NextHeader.SetSrcPort()
 func (p *Packet) SetSrcPort(port uint16) error {
-	p.VerifyParsed()
-
+	if !p.parsed {
+		p.ParseHeaders()
+	}
 	if p.NextHeader == nil {
 		return fmt.Errorf("cannot change source port on protocolID=%d, protocol not implemented", p.nextHeaderType)
 	}
-
+	// Safety check for minimum header size
+	if len(p.Raw) < p.hdrLen+2 {
+		return fmt.Errorf("packet too short for source port")
+	}
+	// Fast path for TCP/UDP
+	if p.nextHeaderType == header.TCP || p.nextHeaderType == header.UDP {
+		p.Raw[p.hdrLen] = byte(port >> 8)
+		p.Raw[p.hdrLen+1] = byte(port)
+		p.NextHeader.(*header.TCPHeader).Modified = true
+		return nil
+	}
 	return p.NextHeader.SetSrcPort(port)
-
 }
 
 // Returns the destination port of the packet
 // Shortcut for NextHeader.DstPort()
 func (p *Packet) DstPort() (uint16, error) {
-	p.VerifyParsed()
-
-	if p.NextHeader == nil {
-		return 0, fmt.Errorf("cannot change get port on protocolID=%d, protocol not implemented", p.nextHeaderType)
+	if !p.parsed {
+		p.ParseHeaders()
 	}
-
+	if p.NextHeader == nil {
+		return 0, fmt.Errorf("cannot get destination port on protocolID=%d, protocol not implemented", p.nextHeaderType)
+	}
+	// Safety check for minimum header size
+	if len(p.Raw) < p.hdrLen+4 {
+		return 0, fmt.Errorf("packet too short for destination port")
+	}
+	// Fast path for TCP/UDP
+	if p.nextHeaderType == header.TCP || p.nextHeaderType == header.UDP {
+		return binary.BigEndian.Uint16(p.Raw[p.hdrLen+2 : p.hdrLen+4]), nil
+	}
 	return p.NextHeader.DstPort()
 }
 
 // Sets the destination port of the packet
 // Shortcut for NextHeader.SetDstPort()
 func (p *Packet) SetDstPort(port uint16) error {
-	p.VerifyParsed()
-
+	if !p.parsed {
+		p.ParseHeaders()
+	}
 	if p.NextHeader == nil {
 		return fmt.Errorf("cannot change destination port on protocolID=%d, protocol not implemented", p.nextHeaderType)
 	}
-
+	// Safety check for minimum header size
+	if len(p.Raw) < p.hdrLen+4 {
+		return fmt.Errorf("packet too short for destination port")
+	}
+	// Fast path for TCP/UDP
+	if p.nextHeaderType == header.TCP || p.nextHeaderType == header.UDP {
+		p.Raw[p.hdrLen+2] = byte(port >> 8)
+		p.Raw[p.hdrLen+3] = byte(port)
+		if p.nextHeaderType == header.TCP {
+			p.NextHeader.(*header.TCPHeader).Modified = true
+		} else {
+			p.NextHeader.(*header.UDPHeader).Modified = true
+		}
+		return nil
+	}
 	return p.NextHeader.SetDstPort(port)
 }
 
@@ -277,7 +360,7 @@ func (p *Packet) UnmarshalBinary(data []byte) error {
 	// Read header directly
 	p.PacketLen = uint(binary.LittleEndian.Uint32(data))
 	rawLen := binary.LittleEndian.Uint32(data[4:])
-	p.parsed = data[8] == 1
+	p.parsed = false // Force reparse
 	offset := header.MarshalHeaderSize
 
 	// Validate sizes
@@ -312,9 +395,8 @@ func (p *Packet) UnmarshalBinary(data []byte) error {
 		return fmt.Errorf("failed to unmarshal WinDivertAddress: %w", err)
 	}
 
-	if p.parsed {
-		p.ParseHeaders()
-	}
+	// Always parse headers after unmarshaling
+	p.ParseHeaders()
 
 	return nil
 }
@@ -362,5 +444,39 @@ func (p *Packet) Reset() {
 		p.Addr.Reserved1 = 0
 		p.Addr.Reserved2 = 0
 		p.Addr.Reserved3 = 0
+	}
+}
+
+// Only parse what's needed
+func (p *Packet) ensureIPHeader() {
+	if p.IpHdr == nil {
+		p.parseIPHeader()
+	}
+}
+
+// Process multiple packets at once
+func ProcessPacketBatch(packets []*Packet) {
+	// ... batch processing logic
+}
+
+// Parse only IP header
+func (p *Packet) parseIPHeader() {
+	if len(p.Raw) == 0 {
+		p.ipVersion = 0
+		p.hdrLen = 0
+		p.nextHeaderType = 0
+		p.IpHdr = nil
+		return
+	}
+
+	p.ipVersion = int(p.Raw[0] >> 4)
+	if p.ipVersion == 4 {
+		p.hdrLen = int((p.Raw[0] & 0xf) << 2)
+		p.nextHeaderType = p.Raw[9]
+		p.IpHdr = header.NewIPv4Header(p.Raw)
+	} else {
+		p.hdrLen = 40
+		p.nextHeaderType = p.Raw[6]
+		p.IpHdr = header.NewIPv6Header(p.Raw)
 	}
 }

@@ -21,14 +21,14 @@ else
 	fi
 endif
 	@go test -run=^$$ -bench=BenchmarkSuite -count=20 > $(NEW)
-	@dos2unix $(OLD) 2>/dev/null
-	@dos2unix $(NEW) 2>/dev/null
+	@dos2unix $(OLD)
+	@dos2unix $(NEW)
 	@benchstat $(OLD) $(NEW)
 
 .PHONY: bench-save
 bench-save:
 	@go test -run=^$$ -bench=BenchmarkSuite -count=20 > $(OLD)
-	@dos2unix $(OLD) 2>/dev/null
+	@dos2unix $(OLD)
 	@echo "Saved benchmark results to $(OLD)"
 
 .PHONY: test

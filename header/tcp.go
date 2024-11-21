@@ -44,21 +44,21 @@ func (h *TCPHeader) String() string {
 		srcPort, dstPort, h.SeqNum(), h.AckNum(), h.HeaderLen(), h.Reserved(), h.NS(), h.CWR(), h.ECE(), h.URG(), h.ACK(), h.PSH(), h.RST(), h.SYN(), h.FIN(), h.Window(), h.Checksum(), h.UrgPtr(), h.Options())
 }
 
-// Reads the header's bytes and returns the source port
+// Optimize TCP port operations with direct byte access
 func (h *TCPHeader) SrcPort() (uint16, error) {
-	return binary.BigEndian.Uint16(h.Raw[0:2]), nil
+	return uint16(h.Raw[0])<<8 | uint16(h.Raw[1]), nil
 }
 
-// Reads the header's bytes and returns the destination port
+// Optimize TCP port operations with direct byte access
 func (h *TCPHeader) DstPort() (uint16, error) {
-	return binary.BigEndian.Uint16(h.Raw[2:4]), nil
+	return uint16(h.Raw[2])<<8 | uint16(h.Raw[3]), nil
 }
 
 // Sets the source port
 func (h *TCPHeader) SetSrcPort(port uint16) error {
 	h.Modified = true
 	h.Raw[0] = uint8(port >> 8)
-	h.Raw[1] = uint8(port & 0xff)
+	h.Raw[1] = uint8(port)
 	return nil
 }
 
@@ -66,7 +66,7 @@ func (h *TCPHeader) SetSrcPort(port uint16) error {
 func (h *TCPHeader) SetDstPort(port uint16) error {
 	h.Modified = true
 	h.Raw[2] = uint8(port >> 8)
-	h.Raw[3] = uint8(port & 0xff)
+	h.Raw[3] = uint8(port)
 	return nil
 }
 

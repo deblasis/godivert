@@ -76,28 +76,61 @@ func (h *IPv6Header) HopLimit() uint8 {
 
 // Reads the header's bytes and returns the source IP
 func (h *IPv6Header) SrcIP() net.IP {
-	srcIP := make(net.IP, net.IPv6len)
-	copy(srcIP, h.Raw[8:24])
-	return srcIP
+	if h.Raw[8] == 0 && h.Raw[9] == 0 && h.Raw[10] == 0 && h.Raw[11] == 0 {
+		return net.IPv6zero
+	}
+	return net.IP(h.Raw[8:24])
 }
 
 // Reads the header's bytes and returns the destination IP
 func (h *IPv6Header) DstIP() net.IP {
-	dstIP := make(net.IP, net.IPv6len)
-	copy(dstIP, h.Raw[24:40])
-	return dstIP
+	if isZeroIPFast(h.Raw[24:40]) {
+		return net.IPv6zero
+	}
+	ip := make([]byte, net.IPv6len)
+	copy(ip, h.Raw[24:40])
+	return ip
+}
+
+// Optimized zero IP check using uint64
+func isZeroIPFast(ip []byte) bool {
+	// Check 16 bytes in 2 uint64 chunks
+	p1 := binary.BigEndian.Uint64(ip[0:8])
+	p2 := binary.BigEndian.Uint64(ip[8:16])
+	return p1 == 0 && p2 == 0
 }
 
 // Sets the source IP of the packet
 func (h *IPv6Header) SetSrcIP(ip net.IP) {
 	h.Modified = true
-	copy(h.Raw[8:24], ip)
+	if len(ip) == net.IPv6len {
+		// Direct byte access for IPv6
+		for i := 0; i < 16; i++ {
+			h.Raw[8+i] = ip[i]
+		}
+	} else {
+		// IPv4-mapped IPv6 fast path
+		h.Raw[8] = 0
+		h.Raw[9] = 0
+		h.Raw[10] = 0xff
+		h.Raw[11] = 0xff
+		h.Raw[12] = ip[12]
+		h.Raw[13] = ip[13]
+		h.Raw[14] = ip[14]
+		h.Raw[15] = ip[15]
+	}
 }
 
 // Sets the destination IP of the packet
 func (h *IPv6Header) SetDstIP(ip net.IP) {
 	h.Modified = true
-	copy(h.Raw[24:40], ip)
+	if len(ip) == net.IPv6len {
+		// Direct copy for IPv6
+		copy(h.Raw[24:40], ip)
+	} else {
+		// Fast path for IPv4-mapped IPv6
+		copy(h.Raw[24:40], net.IPv4(ip[12], ip[13], ip[14], ip[15]).To16())
+	}
 }
 
 // Always returns 0 and an error as IPv6 has no checksum

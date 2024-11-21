@@ -43,19 +43,19 @@ func (h *UDPHeader) HeaderLen() int {
 
 // Reads the header's bytes and returns the source port
 func (h *UDPHeader) SrcPort() (uint16, error) {
-	return binary.BigEndian.Uint16(h.Raw[0:2]), nil
+	return uint16(h.Raw[0])<<8 | uint16(h.Raw[1]), nil
 }
 
 // Reads the header's bytes and returns the destination port
 func (h *UDPHeader) DstPort() (uint16, error) {
-	return binary.BigEndian.Uint16(h.Raw[2:4]), nil
+	return uint16(h.Raw[2])<<8 | uint16(h.Raw[3]), nil
 }
 
 // Sets the source port
 func (h *UDPHeader) SetSrcPort(port uint16) error {
 	h.Modified = true
 	h.Raw[0] = uint8(port >> 8)
-	h.Raw[1] = uint8(port & 0xff)
+	h.Raw[1] = uint8(port)
 	return nil
 }
 
@@ -63,7 +63,7 @@ func (h *UDPHeader) SetSrcPort(port uint16) error {
 func (h *UDPHeader) SetDstPort(port uint16) error {
 	h.Modified = true
 	h.Raw[2] = uint8(port >> 8)
-	h.Raw[3] = uint8(port & 0xff)
+	h.Raw[3] = uint8(port)
 	return nil
 }
 

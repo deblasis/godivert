@@ -1,12 +1,9 @@
 package header
 
 import (
-	"fmt"
-)
-
-import (
 	"encoding/binary"
 	"errors"
+	"fmt"
 )
 
 // Represents a ICMP header
@@ -72,7 +69,7 @@ func (h *ICMPv4Header) SetBody(body uint32) {
 
 // Reads the header's bytes and returns the Checksum
 func (h *ICMPv4Header) Checksum() uint16 {
-	return binary.BigEndian.Uint16(h.Raw[2:4])
+	return uint16(h.Raw[2])<<8 | uint16(h.Raw[3])
 }
 
 // Returns the length of the header in bytes (8 bytes)

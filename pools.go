@@ -13,30 +13,26 @@ const (
 )
 
 var (
-	// Pool for packet raw data buffers
-	packetBufferPool = sync.Pool{
-		New: func() interface{} {
-			b := make([]byte, PacketBufferSize)
-			return &b
+	// Specialized pools for common operations
+	bufferPools = [...]struct {
+		size int
+		pool sync.Pool
+	}{
+		{
+			size: 64, // Small packets
+			pool: sync.Pool{New: func() interface{} { return make([]byte, 64, 64) }},
 		},
-	}
-
-	// Pool for marshal operations
-	marshalBufferPool = sync.Pool{
-		New: func() interface{} {
-			return &struct {
-				buf []byte
-				tmp [24]byte // Fixed size for common headers
-			}{
-				buf: make([]byte, 0, defaultBufferSize),
-			}
+		{
+			size: 576, // IPv4 minimum MTU
+			pool: sync.Pool{New: func() interface{} { return make([]byte, 576, 576) }},
 		},
-	}
-
-	// Pool for address marshaling
-	addressBufferPool = sync.Pool{
-		New: func() interface{} {
-			return make([]byte, 24) // WinDivertAddress fixed size
+		{
+			size: 1500, // Ethernet MTU
+			pool: sync.Pool{New: func() interface{} { return make([]byte, 1500, 1500) }},
+		},
+		{
+			size: 9000, // Jumbo frames
+			pool: sync.Pool{New: func() interface{} { return make([]byte, 9000, 9000) }},
 		},
 	}
 
@@ -50,7 +46,7 @@ var (
 		},
 	}
 
-	// Add new pool for marshal operations
+	// Pool for marshal operations
 	marshalPool = sync.Pool{
 		New: func() interface{} {
 			return &struct {
@@ -64,37 +60,54 @@ var (
 	}
 )
 
-// GetBuffer gets a buffer from the pool with at least the specified size
+// GetBuffer with size class optimization
 func GetBuffer(size int) []byte {
 	if size > maxBufferSize {
 		return make([]byte, size)
 	}
 
-	bufStruct := marshalBufferPool.Get().(*struct {
-		buf []byte
-		tmp [24]byte
-	})
-
-	if cap(bufStruct.buf) < size {
-		bufStruct.buf = make([]byte, size)
+	// Binary search for appropriate size class
+	left, right := 0, len(bufferPools)-1
+	for left <= right {
+		mid := (left + right) / 2
+		if size <= bufferPools[mid].size {
+			if mid == 0 || size > bufferPools[mid-1].size {
+				buf := bufferPools[mid].pool.Get().([]byte)
+				return buf[:size]
+			}
+			right = mid - 1
+		} else {
+			left = mid + 1
+		}
 	}
-	bufStruct.buf = bufStruct.buf[:size]
-	return bufStruct.buf
+
+	return make([]byte, size)
 }
 
-// PutBuffer returns a buffer to the pool
+// PutBuffer with optimized size class lookup
 func PutBuffer(buf []byte) {
-	if cap(buf) <= maxBufferSize {
-		marshalBufferPool.Put(&struct {
-			buf []byte
-			tmp [24]byte
-		}{
-			buf: buf[:0],
-		})
+	if cap(buf) > maxBufferSize {
+		return
+	}
+
+	// Binary search for exact size match
+	size := cap(buf)
+	left, right := 0, len(bufferPools)-1
+	for left <= right {
+		mid := (left + right) / 2
+		if size == bufferPools[mid].size {
+			bufferPools[mid].pool.Put(buf)
+			return
+		}
+		if size < bufferPools[mid].size {
+			right = mid - 1
+		} else {
+			left = mid + 1
+		}
 	}
 }
 
-// Replace GetBuffer with optimized version
+// GetMarshalBuffer returns a buffer for marshal operations
 func GetMarshalBuffer(size int) (*struct {
 	buf  []byte
 	hdr  [header.MarshalHeaderSize]byte
@@ -123,7 +136,7 @@ func GetMarshalBuffer(size int) (*struct {
 	return buf, true
 }
 
-// Add PutMarshalBuffer
+// PutMarshalBuffer returns a marshal buffer to the pool
 func PutMarshalBuffer(buf *struct {
 	buf  []byte
 	hdr  [header.MarshalHeaderSize]byte
