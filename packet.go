@@ -1,6 +1,7 @@
 package godivert
 
 import (
+	"encoding/binary"
 	"fmt"
 	"net"
 
@@ -25,6 +26,17 @@ type Packet struct {
 
 // Parse the packet's headers
 func (p *Packet) ParseHeaders() {
+	// Handle empty packets
+	if len(p.Raw) == 0 {
+		p.ipVersion = 0
+		p.hdrLen = 0
+		p.nextHeaderType = 0
+		p.IpHdr = nil
+		p.NextHeader = nil
+		p.parsed = true
+		return
+	}
+
 	p.ipVersion = int(p.Raw[0] >> 4)
 	if p.ipVersion == 4 {
 		p.hdrLen = int((p.Raw[0] & 0xf) << 2)
@@ -219,4 +231,91 @@ func (p *Packet) Direction() Direction {
 // Returns true if the packet matches the filter
 func (p *Packet) EvalFilter(filter string) (bool, error) {
 	return HelperEvalFilter(p, filter)
+}
+
+// MarshalBinary implements the encoding.BinaryMarshaler interface
+func (p *Packet) MarshalBinary() ([]byte, error) {
+	// Calculate total size needed
+	size := 8 + // For PacketLen and rawLen
+		1 + // For parsed flag
+		len(p.Raw) + // Raw packet data
+		p.Addr.Size() // WinDivertAddress size
+
+	// Create buffer with calculated size
+	buf := make([]byte, size)
+	offset := 0
+
+	// Write PacketLen
+	binary.LittleEndian.PutUint32(buf[offset:], uint32(p.PacketLen))
+	offset += 4
+
+	// Write Raw length
+	binary.LittleEndian.PutUint32(buf[offset:], uint32(len(p.Raw)))
+	offset += 4
+
+	// Write parsed flag
+	if p.parsed {
+		buf[offset] = 1
+	}
+	offset++
+
+	// Write Raw packet data
+	copy(buf[offset:], p.Raw)
+	offset += len(p.Raw)
+
+	// Write WinDivertAddress
+	addrBytes, err := p.Addr.MarshalBinary()
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal WinDivertAddress: %w", err)
+	}
+	copy(buf[offset:], addrBytes)
+
+	return buf, nil
+}
+
+// UnmarshalBinary implements the encoding.BinaryUnmarshaler interface
+func (p *Packet) UnmarshalBinary(data []byte) error {
+	if len(data) < 9 { // Minimum size check (8 bytes for lengths + 1 for parsed flag)
+		return fmt.Errorf("data too short for packet unmarshaling")
+	}
+
+	offset := 0
+
+	// Read PacketLen
+	p.PacketLen = uint(binary.LittleEndian.Uint32(data[offset:]))
+	offset += 4
+
+	// Read Raw length
+	rawLen := binary.LittleEndian.Uint32(data[offset:])
+	offset += 4
+
+	// Read parsed flag
+	p.parsed = data[offset] == 1
+	offset++
+
+	// Initialize WinDivertAddress before using it
+	p.Addr = &WinDivertAddress{}
+	addrSize := p.Addr.Size()
+
+	// Verify remaining data length
+	if len(data[offset:]) < int(rawLen)+addrSize {
+		return fmt.Errorf("data too short for packet content: need %d bytes, got %d", int(rawLen)+addrSize, len(data[offset:]))
+	}
+
+	// Read Raw packet data
+	p.Raw = make([]byte, rawLen)
+	copy(p.Raw, data[offset:offset+int(rawLen)])
+	offset += int(rawLen)
+
+	// Read WinDivertAddress
+	if err := p.Addr.UnmarshalBinary(data[offset:]); err != nil {
+		return fmt.Errorf("failed to unmarshal WinDivertAddress: %w", err)
+	}
+
+	// If packet was parsed before serialization, parse it again
+	if p.parsed {
+		p.ParseHeaders()
+	}
+
+	return nil
 }
