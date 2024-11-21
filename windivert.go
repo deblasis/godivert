@@ -367,7 +367,10 @@ func (wd *WinDivertHandle) Recv() (*Packet, error) {
 		return nil, errors.New("WinDivert DLL not loaded")
 	}
 
-	packetBuffer := make([]byte, PacketBufferSize)
+	packetBufferPtr := packetBufferPool.Get().(*[]byte)
+	packetBuffer := *packetBufferPtr
+	defer packetBufferPool.Put(packetBufferPtr)
+
 	var packetLen uint32
 	var addr WinDivertAddress
 
