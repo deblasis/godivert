@@ -63,13 +63,6 @@ type WinDivertHandle struct {
 	open   bool
 }
 
-var packetBufferPool = sync.Pool{
-	New: func() interface{} {
-		b := make([]byte, PacketBufferSize)
-		return &b
-	},
-}
-
 // LoadDLL loads the WinDivert DLL and initializes the proc addresses
 func LoadDLL(path64, path32 string) error {
 	dllMutex.Lock()

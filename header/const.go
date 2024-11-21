@@ -17,4 +17,8 @@ const (
 
 	IPv4 = 4
 	IPv6 = 6
+
+	// Fixed sizes for marshaling
+	AddressSize       = 24 // WinDivertAddress fixed size
+	MarshalHeaderSize = 9  // PacketLen(4) + RawLen(4) + parsed(1)
 )

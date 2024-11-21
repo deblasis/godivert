@@ -235,87 +235,132 @@ func (p *Packet) EvalFilter(filter string) (bool, error) {
 
 // MarshalBinary implements the encoding.BinaryMarshaler interface
 func (p *Packet) MarshalBinary() ([]byte, error) {
-	// Calculate total size needed
-	size := 8 + // For PacketLen and rawLen
-		1 + // For parsed flag
-		len(p.Raw) + // Raw packet data
-		p.Addr.Size() // WinDivertAddress size
+	size := header.MarshalHeaderSize + len(p.Raw) + header.AddressSize
 
-	// Create buffer with calculated size
-	buf := make([]byte, size)
-	offset := 0
+	// Get buffer from optimized pool
+	mb, pooled := GetMarshalBuffer(size)
+	defer PutMarshalBuffer(mb, pooled)
 
-	// Write PacketLen
-	binary.LittleEndian.PutUint32(buf[offset:], uint32(p.PacketLen))
-	offset += 4
+	// Write header directly to fixed buffer
+	binary.LittleEndian.PutUint32(mb.hdr[0:], uint32(p.PacketLen))
+	binary.LittleEndian.PutUint32(mb.hdr[4:], uint32(len(p.Raw)))
+	mb.hdr[8] = boolToByte(p.parsed)
 
-	// Write Raw length
-	binary.LittleEndian.PutUint32(buf[offset:], uint32(len(p.Raw)))
-	offset += 4
+	// Copy header
+	copy(mb.buf[0:], mb.hdr[:])
+	offset := header.MarshalHeaderSize
 
-	// Write parsed flag
-	if p.parsed {
-		buf[offset] = 1
-	}
-	offset++
-
-	// Write Raw packet data
-	copy(buf[offset:], p.Raw)
+	// Copy packet data
+	copy(mb.buf[offset:], p.Raw)
 	offset += len(p.Raw)
 
-	// Write WinDivertAddress
+	// Marshal address
 	addrBytes, err := p.Addr.MarshalBinary()
 	if err != nil {
-		return nil, fmt.Errorf("failed to marshal WinDivertAddress: %w", err)
+		return nil, err
 	}
-	copy(buf[offset:], addrBytes)
+	copy(mb.buf[offset:], addrBytes)
 
-	return buf, nil
+	// Create final result with single allocation
+	result := make([]byte, size)
+	copy(result, mb.buf)
+	return result, nil
 }
 
 // UnmarshalBinary implements the encoding.BinaryUnmarshaler interface
 func (p *Packet) UnmarshalBinary(data []byte) error {
-	if len(data) < 9 { // Minimum size check (8 bytes for lengths + 1 for parsed flag)
-		return fmt.Errorf("data too short for packet unmarshaling")
+	if len(data) < header.MarshalHeaderSize {
+		return fmt.Errorf("data too short for packet unmarshaling: need at least %d bytes, got %d",
+			header.MarshalHeaderSize, len(data))
 	}
 
-	offset := 0
+	// Read header directly
+	p.PacketLen = uint(binary.LittleEndian.Uint32(data))
+	rawLen := binary.LittleEndian.Uint32(data[4:])
+	p.parsed = data[8] == 1
+	offset := header.MarshalHeaderSize
 
-	// Read PacketLen
-	p.PacketLen = uint(binary.LittleEndian.Uint32(data[offset:]))
-	offset += 4
-
-	// Read Raw length
-	rawLen := binary.LittleEndian.Uint32(data[offset:])
-	offset += 4
-
-	// Read parsed flag
-	p.parsed = data[offset] == 1
-	offset++
-
-	// Initialize WinDivertAddress before using it
-	p.Addr = &WinDivertAddress{}
-	addrSize := p.Addr.Size()
-
-	// Verify remaining data length
-	if len(data[offset:]) < int(rawLen)+addrSize {
-		return fmt.Errorf("data too short for packet content: need %d bytes, got %d", int(rawLen)+addrSize, len(data[offset:]))
+	// Validate sizes
+	if rawLen > MaxPacketSize {
+		return fmt.Errorf("invalid raw packet size: %d (max allowed: %d)", rawLen, MaxPacketSize)
 	}
 
-	// Read Raw packet data
-	p.Raw = make([]byte, rawLen)
+	remainingLen := len(data) - offset
+	if remainingLen < int(rawLen)+header.AddressSize {
+		return fmt.Errorf("data too short: need %d bytes, got %d",
+			int(rawLen)+header.AddressSize, remainingLen)
+	}
+
+	// Reuse or allocate Raw buffer
+	if p.Raw == nil || cap(p.Raw) < int(rawLen) {
+		p.Raw = make([]byte, rawLen)
+	} else {
+		p.Raw = p.Raw[:rawLen]
+	}
+
+	// Single copy for packet data
 	copy(p.Raw, data[offset:offset+int(rawLen)])
 	offset += int(rawLen)
 
-	// Read WinDivertAddress
+	// Initialize address if needed
+	if p.Addr == nil {
+		p.Addr = NewWinDivertAddress()
+	}
+
+	// Unmarshal address directly
 	if err := p.Addr.UnmarshalBinary(data[offset:]); err != nil {
 		return fmt.Errorf("failed to unmarshal WinDivertAddress: %w", err)
 	}
 
-	// If packet was parsed before serialization, parse it again
 	if p.parsed {
 		p.ParseHeaders()
 	}
 
 	return nil
+}
+
+// Add helper method to get a packet from pool
+func GetPacket() *Packet {
+	p := packetPool.Get().(*Packet)
+	p.Reset()
+	return p
+}
+
+// Add helper method to return packet to pool
+func (p *Packet) Release() {
+	p.Reset()
+	packetPool.Put(p)
+}
+
+// boolToByte converts a bool to a byte (0 or 1)
+func boolToByte(b bool) byte {
+	if b {
+		return 1
+	}
+	return 0
+}
+
+// Reset resets the packet to its zero state for reuse
+func (p *Packet) Reset() {
+	if p.Raw != nil {
+		p.Raw = p.Raw[:0]
+	}
+	p.PacketLen = 0
+	p.parsed = false
+	p.ipVersion = 0
+	p.hdrLen = 0
+	p.nextHeaderType = 0
+	p.IpHdr = nil
+	p.NextHeader = nil
+
+	// Reset address if it exists
+	if p.Addr != nil {
+		p.Addr.Timestamp = 0
+		p.Addr.IfIdx = 0
+		p.Addr.SubIfIdx = 0
+		p.Addr.Flags = 0
+		p.Addr.Reserved1 = 0
+		p.Addr.Reserved2 = 0
+		p.Addr.Reserved3 = 0
+	}
 }

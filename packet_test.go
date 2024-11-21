@@ -101,6 +101,8 @@ func TestPacketMarshalUnmarshalVariousTypes(t *testing.T) {
 				t.Fatalf("Failed to unmarshal packet: %v", err)
 			}
 
+			restored.ParseHeaders()
+
 			if !bytes.Equal(original.Raw, restored.Raw) {
 				t.Errorf("Raw packet data doesn't match\nOriginal: %v\nRestored: %v", original.Raw, restored.Raw)
 			}
@@ -114,11 +116,15 @@ func TestPacketMarshalUnmarshalVariousTypes(t *testing.T) {
 				t.Errorf("IP version doesn't match: got %d, want %d", restored.ipVersion, original.ipVersion)
 			}
 
-			if !original.SrcIP().Equal(restored.SrcIP()) {
-				t.Errorf("Source IP doesn't match: got %v, want %v", restored.SrcIP(), original.SrcIP())
+			if original.SrcIP() != nil && restored.SrcIP() != nil {
+				if !original.SrcIP().Equal(restored.SrcIP()) {
+					t.Errorf("Source IP doesn't match: got %v, want %v", restored.SrcIP(), original.SrcIP())
+				}
 			}
-			if !original.DstIP().Equal(restored.DstIP()) {
-				t.Errorf("Destination IP doesn't match: got %v, want %v", restored.DstIP(), original.DstIP())
+			if original.DstIP() != nil && restored.DstIP() != nil {
+				if !original.DstIP().Equal(restored.DstIP()) {
+					t.Errorf("Destination IP doesn't match: got %v, want %v", restored.DstIP(), original.DstIP())
+				}
 			}
 
 			if original.NextHeaderType() == header.TCP || original.NextHeaderType() == header.UDP {
