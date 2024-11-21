@@ -13,6 +13,12 @@ jobs:
     env:
       ARCHITECTURE: "x64"
 
+    # Add permissions needed for test results
+    permissions:
+      checks: write
+      pull-requests: write
+      contents: read
+
     steps:
       - uses: actions/checkout@v4
 
@@ -71,3 +77,11 @@ jobs:
           path: |
             test-results.xml
             test-output.json
+
+      # Add test results publishing
+      - name: Publish Test Results
+        uses: EnricoMi/publish-unit-test-result-action/windows@v2
+        if: always()
+        with:
+          files: "test-results.xml"
+          check_name: "Test Results"
