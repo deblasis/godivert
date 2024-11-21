@@ -106,7 +106,7 @@ jobs:
         uses: emibcn/badge-action@v2.0.3
         with:
           label: Tests
-          status: "${{ fromJSON( steps.test-results.outputs.json ).formatted.stats.tests }} tests, ${{ fromJSON( steps.test-results.outputs.json ).formatted.stats.runs }} runs: ${{ fromJSON( steps.test-results.outputs.json ).conclusion }}"
+          status: "${{ fromJSON( steps.test-results.outputs.json ).formatted.stats.tests }} tests, ${{ fromJSON( steps.test-results.outputs.json ).formatted.stats.runs }} runs, 0 days since last accident: HUGE ${{ fromJSON( steps.test-results.outputs.json ).conclusion }}"
           color: ${{ env.BADGE_COLOR }}
           path: badge.svg
 
