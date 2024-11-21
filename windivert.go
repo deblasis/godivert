@@ -369,13 +369,11 @@ func (wd *WinDivertHandle) Recv() (*Packet, error) {
 		return nil, errors.New("can't receive, the handle isn't open")
 	}
 
-	packetBuffer := *packetBufferPool.Get().(*[]byte)
-	defer packetBufferPool.Put(&packetBuffer)
-
 	if winDivertRecv == nil {
 		return nil, errors.New("WinDivert DLL not loaded")
 	}
 
+	packetBuffer := make([]byte, PacketBufferSize)
 	var packetLen uint32
 	var addr WinDivertAddress
 
@@ -389,6 +387,10 @@ func (wd *WinDivertHandle) Recv() (*Packet, error) {
 
 	if success == 0 {
 		return nil, fmt.Errorf("WinDivertRecv failed: %v", err)
+	}
+
+	if packetLen > uint32(PacketBufferSize) {
+		return nil, fmt.Errorf("received packet length %d exceeds buffer size %d", packetLen, PacketBufferSize)
 	}
 
 	packet := &Packet{
