@@ -10,6 +10,8 @@ jobs:
   test:
     name: Run Tests
     runs-on: windows-latest
+    env:
+      ARCHITECTURE: "x64"
 
     steps:
       - uses: actions/checkout@v4
@@ -22,9 +24,34 @@ jobs:
       - name: Install gotestsum
         run: go install gotest.tools/gotestsum@latest
 
+      - name: Cache WinDivert
+        id: cache-windivert
+        uses: actions/cache@v4
+        with:
+          path: |
+            WinDivert.dll
+            WinDivert.lib
+            WinDivert64.sys
+          key: windivert-2.2.2-${{ runner.os }}-${{ env.ARCHITECTURE }}
+
+      - name: Download and Setup WinDivert
+        if: steps.cache-windivert.outputs.cache-hit != 'true'
+        shell: powershell
+        run: |
+          Invoke-WebRequest -Uri "https://reqrypt.org/download/WinDivert-2.2.2-A.zip" -OutFile "WinDivert.zip"
+          Expand-Archive -Path "WinDivert.zip" -DestinationPath "."
+          Copy-Item "WinDivert-2.2.2-A/x64/WinDivert.dll" -Destination "."
+          Copy-Item "WinDivert-2.2.2-A/x64/WinDivert.lib" -Destination "."
+          Copy-Item "WinDivert-2.2.2-A/x64/WinDivert64.sys" -Destination "."
+
       - name: Run Tests
         shell: powershell
         run: |
+          if ([Environment]::Is64BitOperatingSystem -ne $true) {
+            Write-Error "x64 architecture required"
+            exit 1
+          }
+
           $isAdmin = ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
           if (-not $isAdmin) {
             Write-Error "Not running as Administrator"
