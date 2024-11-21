@@ -312,8 +312,10 @@ func TestWinDivertBasicOperations(t *testing.T) {
 		t.Fatal("DLL should be loaded")
 	}
 
-	// Open a handle with a basic filter
-	handle, err := NewWinDivertHandle("icmp")
+	// Open a handle with a basic filter and specific layer/flags
+	handle, err := NewWinDivertHandle("icmp",
+		WithLayer(LayerNetwork),
+		WithFlags(FlagSniff))
 	if err != nil {
 		t.Fatalf("Failed to create handle: %v", err)
 	}
@@ -330,7 +332,7 @@ func TestWinDivertBasicOperations(t *testing.T) {
 	fmt.Printf("Test - ICMP packet content: %v\n", icmpPacket)
 
 	addr := &WinDivertAddress{}
-	addr.SetLayer(LayerNetwork)
+	addr.SetLayer(uint8(LayerNetwork)) // Convert Layer to uint8
 	addr.SetFlags(0)
 	fmt.Printf("Test - WinDivertAddress: %+v\n", addr)
 
@@ -371,8 +373,11 @@ func TestWinDivertSendReceive(t *testing.T) {
 	setupTestDLL(t)
 	defer UnloadDLL()
 
-	// Open a handle with a basic filter
-	handle, err := NewWinDivertHandle("true")
+	// Open a handle with specific options
+	handle, err := NewWinDivertHandle("true",
+		WithLayer(LayerNetwork),
+		WithPriority(0),
+		WithFlags(0))
 	if err != nil {
 		t.Fatalf("Failed to create handle: %v", err)
 	}
@@ -395,8 +400,8 @@ func TestWinDivertSendReceive(t *testing.T) {
 
 		// Create WinDivertAddress with proper direction and layer
 		addr := &WinDivertAddress{}
-		addr.SetLayer(LayerNetwork)
-		addr.SetFlags(uint8(0)) // Clear flags first
+		addr.SetLayer(uint8(LayerNetwork)) // Convert Layer to uint8
+		addr.SetFlags(uint8(0))            // Clear flags first
 		if WinDivertDirectionOutbound {
 			addr.SetFlags(1) // Set outbound flag
 		}
@@ -684,5 +689,117 @@ func TestHelperIPv6AddressConversion(t *testing.T) {
 	host := HelperNtohIPv6Address(network)
 	if host != original {
 		t.Errorf("IPv6 address conversion roundtrip failed: got %v, want %v", host, original)
+	}
+}
+
+func TestWinDivertFlags(t *testing.T) {
+	setupTestDLL(t)
+	defer UnloadDLL()
+
+	tests := []struct {
+		name    string
+		flags   Flags
+		wantErr bool
+	}{
+		{
+			name:    "valid flags - sniff only",
+			flags:   FlagSniff,
+			wantErr: false,
+		},
+		{
+			name:    "valid flags - drop only",
+			flags:   FlagDrop,
+			wantErr: false,
+		},
+		{
+			name:    "invalid flags - sniff and drop",
+			flags:   FlagSniff | FlagDrop,
+			wantErr: true,
+		},
+		{
+			name:    "invalid flags - recv and send only",
+			flags:   FlagRecvOnly | FlagSendOnly,
+			wantErr: true,
+		},
+		{
+			name:    "valid flags - multiple compatible",
+			flags:   FlagSniff | FlagFragments,
+			wantErr: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := NewWinDivertHandle("true",
+				WithLayer(LayerNetwork),
+				WithFlags(tt.flags))
+
+			if (err != nil) != tt.wantErr {
+				t.Errorf("NewWinDivertHandle() with flags %v error = %v, wantErr %v",
+					tt.flags, err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestWinDivertLayerFlags(t *testing.T) {
+	setupTestDLL(t)
+	defer UnloadDLL()
+
+	tests := []struct {
+		name    string
+		layer   Layer
+		flags   Flags
+		wantErr bool
+	}{
+		{
+			name:    "network layer - no required flags",
+			layer:   LayerNetwork,
+			flags:   0,
+			wantErr: false,
+		},
+		{
+			name:    "flow layer - correct flags",
+			layer:   LayerFlow,
+			flags:   FlagSniff | FlagRecvOnly,
+			wantErr: false,
+		},
+		{
+			name:    "flow layer - missing flags",
+			layer:   LayerFlow,
+			flags:   FlagSniff, // Missing FlagRecvOnly
+			wantErr: true,
+		},
+		{
+			name:    "socket layer - correct flags",
+			layer:   LayerSocket,
+			flags:   FlagRecvOnly,
+			wantErr: false,
+		},
+		{
+			name:    "socket layer - missing flags",
+			layer:   LayerSocket,
+			flags:   0,
+			wantErr: true,
+		},
+		{
+			name:    "reflect layer - correct flags",
+			layer:   LayerReflect,
+			flags:   FlagSniff | FlagRecvOnly,
+			wantErr: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := NewWinDivertHandle("true",
+				WithLayer(tt.layer),
+				WithFlags(tt.flags))
+
+			if (err != nil) != tt.wantErr {
+				t.Errorf("NewWinDivertHandle() with layer %v and flags %v error = %v, wantErr %v",
+					tt.layer, tt.flags, err, tt.wantErr)
+			}
+		})
 	}
 }

@@ -278,8 +278,39 @@ func isAdmin() bool {
 	return token.IsElevated()
 }
 
-// Modify NewWinDivertHandle to check for admin rights
-func NewWinDivertHandle(filter string) (*WinDivertHandle, error) {
+// Option is a function that configures a WinDivertHandle
+type Option func(*WinDivertHandleConfig)
+
+// WinDivertHandleConfig holds configuration for WinDivertHandle
+type WinDivertHandleConfig struct {
+	layer    Layer
+	priority int16
+	flags    Flags
+}
+
+// WithLayer sets the layer for the WinDivertHandle
+func WithLayer(layer Layer) Option {
+	return func(cfg *WinDivertHandleConfig) {
+		cfg.layer = layer
+	}
+}
+
+// WithPriority sets the priority for the WinDivertHandle
+func WithPriority(priority int16) Option {
+	return func(cfg *WinDivertHandleConfig) {
+		cfg.priority = priority
+	}
+}
+
+// WithFlags sets the flags for the WinDivertHandle
+func WithFlags(flags Flags) Option {
+	return func(cfg *WinDivertHandleConfig) {
+		cfg.flags = flags
+	}
+}
+
+// NewWinDivertHandle creates a new WinDivertHandle with the given filter and options
+func NewWinDivertHandle(filter string, opts ...Option) (*WinDivertHandle, error) {
 	if !isDLLLoaded {
 		return nil, errors.New("WinDivert DLL not loaded")
 	}
@@ -294,12 +325,45 @@ func NewWinDivertHandle(filter string) (*WinDivertHandle, error) {
 		return nil, fmt.Errorf("invalid filter at position %d", pos)
 	}
 
+	// Default configuration
+	cfg := &WinDivertHandleConfig{
+		layer:    LayerNetwork,
+		priority: 0,
+		flags:    0,
+	}
+
+	// Apply options
+	for _, opt := range opts {
+		opt(cfg)
+	}
+
+	// Validate flags
+	if !cfg.flags.IsValid() {
+		return nil, errors.New("invalid flags combination")
+	}
+
+	// Validate layer-specific required flags
+	switch cfg.layer {
+	case LayerFlow:
+		if !cfg.flags.Has(FlagSniff | FlagRecvOnly) {
+			return nil, errors.New("flow layer requires FlagSniff and FlagRecvOnly")
+		}
+	case LayerSocket:
+		if !cfg.flags.Has(FlagRecvOnly) {
+			return nil, errors.New("socket layer requires FlagRecvOnly")
+		}
+	case LayerReflect:
+		if !cfg.flags.Has(FlagSniff | FlagRecvOnly) {
+			return nil, errors.New("reflect layer requires FlagSniff and FlagRecvOnly")
+		}
+	}
+
 	// Open handle with detailed diagnostics
 	handle, _, err := winDivertOpen.Call(
 		uintptr(unsafe.Pointer(filterPtr)),
-		uintptr(LayerNetwork),
-		0, // Default priority
-		0) // Default flags
+		uintptr(cfg.layer),
+		uintptr(cfg.priority),
+		uintptr(cfg.flags))
 
 	if handle == 0 {
 		// Get detailed Windows error

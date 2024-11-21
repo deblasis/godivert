@@ -14,15 +14,6 @@ type WinDivertAddress struct {
 	Reserved3 uint32
 }
 
-// Add these constants for Layer values
-const (
-	LayerNetwork = 0
-	LayerForward = 1
-	LayerFlow    = 2
-	LayerSocket  = 3
-	LayerReflect = 4
-)
-
 // Add helper methods to handle flags through Flags field
 func (w *WinDivertAddress) SetFlags(flags uint8) {
 	w.Flags = (w.Flags & 0xF0) | (flags & 0x0F)
