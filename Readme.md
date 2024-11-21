@@ -1,6 +1,7 @@
 # GoDivert
 
 [![Tests](https://github.com/deblasis/godivert/actions/workflows/test.yml/badge.svg)](https://github.com/deblasis/godivert/actions/workflows/test.yml)
+[![Test Results](https://gist.githubusercontent.com/deblasis/f0b1a69791fef8a99570926866124677/raw/badge.svg)](https://github.com/deblasis/godivert/actions/workflows/test.yml)
 
 Go bindings for [WinDivert](https://github.com/basil00/Divert) v2.2.
 
@@ -225,3 +226,25 @@ func main() {
 ```
 
 Count all protocols passing by for 15 seconds.
+
+## Testing
+
+Tests require administrator privileges and WinDivert 2.2 files. You can run tests locally with:
+
+```bash
+# Download WinDivert files first
+Invoke-WebRequest -Uri "https://reqrypt.org/download/WinDivert-2.2.2-A.zip" -OutFile "WinDivert.zip"
+Expand-Archive -Path "WinDivert.zip" -DestinationPath "."
+Copy-Item "WinDivert-2.2.2-A/x64/WinDivert.dll" -Destination "."
+Copy-Item "WinDivert-2.2.2-A/x64/WinDivert.lib" -Destination "."
+Copy-Item "WinDivert-2.2.2-A/x64/WinDivert64.sys" -Destination "."
+
+# Run tests (as administrator)
+go test -v ./...
+```
+
+Test results are available in several places:
+1. [GitHub Actions](https://github.com/deblasis/godivert/actions/workflows/test.yml) - Full test runs
+2. Pull Request comments - Detailed test results for each PR
+3. Checks tab - Test failures and annotations
+4. Job summary - Overview of test results
