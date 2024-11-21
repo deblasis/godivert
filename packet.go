@@ -36,17 +36,35 @@ func (p *Packet) ParseHeaders() {
 		p.IpHdr = header.NewIPv6Header(p.Raw)
 	}
 
+	// Ensure we have enough bytes for the next header
+	if len(p.Raw) <= p.hdrLen {
+		p.NextHeader = nil
+		p.parsed = true
+		return
+	}
+
+	// Get the payload after IP header
+	payload := p.Raw[p.hdrLen:]
+
 	switch p.nextHeaderType {
 	case header.ICMPv4:
-		p.NextHeader = header.NewICMPv4Header(p.Raw[p.hdrLen : p.hdrLen+header.ICMPv4HeaderLen])
+		if len(payload) >= header.ICMPv4HeaderLen {
+			p.NextHeader = header.NewICMPv4Header(payload)
+		}
 	case header.TCP:
-		p.NextHeader = header.NewTCPHeader(p.Raw[p.hdrLen:])
+		if len(payload) >= header.TCPHeaderLen {
+			p.NextHeader = header.NewTCPHeader(payload)
+		}
 	case header.UDP:
-		p.NextHeader = header.NewUDPHeader(p.Raw[p.hdrLen : p.hdrLen+header.UDPHeaderLen])
+		if len(payload) >= header.UDPHeaderLen {
+			p.NextHeader = header.NewUDPHeader(payload)
+		}
 	case header.ICMPv6:
-		p.NextHeader = header.NewICMPv6Header(p.Raw[p.hdrLen : p.hdrLen+header.ICMPv6HeaderLen])
+		if len(payload) >= header.ICMPv6HeaderLen {
+			p.NextHeader = header.NewICMPv6Header(payload)
+		}
 	default:
-		// Protocol not implemented
+		// Protocol not implemented or unknown
 		p.NextHeader = nil
 	}
 
