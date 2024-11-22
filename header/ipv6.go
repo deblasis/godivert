@@ -66,7 +66,7 @@ func (h *IPv6Header) PayloadLen() uint16 {
 
 // Reads the header's bytes and returns the protocol number
 func (h *IPv6Header) NextHeader() uint8 {
-	return h.Raw[6]
+	return h.Raw[IPv6_PROTO_OFFSET]
 }
 
 // Reads the header's bytes and returns the hop limit

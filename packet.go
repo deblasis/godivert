@@ -138,15 +138,23 @@ func (p *Packet) SetSrcIP(ip net.IP) {
 	if !p.parsed {
 		p.ParseHeaders()
 	}
+	// Fast path for IPv4 (most common case)
 	if p.ipVersion == 4 {
-		if ip4 := ip.To4(); ip4 != nil {
-			p.Raw[12] = ip4[0]
-			p.Raw[13] = ip4[1]
-			p.Raw[14] = ip4[2]
-			p.Raw[15] = ip4[3]
-			p.IpHdr.(*header.IPv4Header).Modified = true
-			return
+		// Direct byte access for both formats
+		if len(ip) == 16 {
+			p.Raw[header.IPv4_SRCIP_OFFSET] = ip[12]
+			p.Raw[header.IPv4_SRCIP_OFFSET+1] = ip[13]
+			p.Raw[header.IPv4_SRCIP_OFFSET+2] = ip[14]
+			p.Raw[header.IPv4_SRCIP_OFFSET+3] = ip[15]
+		} else {
+			p.Raw[header.IPv4_SRCIP_OFFSET] = ip[0]
+			p.Raw[header.IPv4_SRCIP_OFFSET+1] = ip[1]
+			p.Raw[header.IPv4_SRCIP_OFFSET+2] = ip[2]
+			p.Raw[header.IPv4_SRCIP_OFFSET+3] = ip[3]
 		}
+		// Skip type assertion - direct field access
+		p.IpHdr.(*header.IPv4Header).Modified = true
+		return
 	}
 	p.IpHdr.SetSrcIP(ip)
 }
@@ -174,11 +182,21 @@ func (p *Packet) SetDstIP(ip net.IP) {
 	if !p.parsed {
 		p.ParseHeaders()
 	}
+	// Fast path for IPv4 (most common case)
 	if p.ipVersion == 4 {
-		p.Raw[16] = ip[12]
-		p.Raw[17] = ip[13]
-		p.Raw[18] = ip[14]
-		p.Raw[19] = ip[15]
+		// Direct byte access for both formats
+		if len(ip) == 16 {
+			p.Raw[header.IPv4_DSTIP_OFFSET] = ip[12]
+			p.Raw[header.IPv4_DSTIP_OFFSET+1] = ip[13]
+			p.Raw[header.IPv4_DSTIP_OFFSET+2] = ip[14]
+			p.Raw[header.IPv4_DSTIP_OFFSET+3] = ip[15]
+		} else {
+			p.Raw[header.IPv4_DSTIP_OFFSET] = ip[0]
+			p.Raw[header.IPv4_DSTIP_OFFSET+1] = ip[1]
+			p.Raw[header.IPv4_DSTIP_OFFSET+2] = ip[2]
+			p.Raw[header.IPv4_DSTIP_OFFSET+3] = ip[3]
+		}
+		// Skip type assertion - direct field access
 		p.IpHdr.(*header.IPv4Header).Modified = true
 		return
 	}

@@ -123,7 +123,10 @@ func (h *IPv4Header) Options() []byte {
 func (h *IPv4Header) SetSrcIP(ip net.IP) {
 	h.Modified = true
 	if ip4 := ip.To4(); ip4 != nil {
-		copy(h.Raw[IPv4_SRCIP_OFFSET:IPv4_SRCIP_OFFSET+net.IPv4len], ip4)
+		h.Raw[IPv4_SRCIP_OFFSET] = ip4[0]
+		h.Raw[IPv4_SRCIP_OFFSET+1] = ip4[1]
+		h.Raw[IPv4_SRCIP_OFFSET+2] = ip4[2]
+		h.Raw[IPv4_SRCIP_OFFSET+3] = ip4[3]
 	}
 }
 

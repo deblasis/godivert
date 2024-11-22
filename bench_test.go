@@ -10,6 +10,8 @@ import (
 	"runtime"
 	"testing"
 	"time"
+
+	"github.com/deblasis/godivert/header"
 )
 
 // BenchmarkSuite runs all benchmarks and saves results
@@ -265,4 +267,117 @@ func runPacketAllocationBenchmarks(b *testing.B) {
 			}
 		})
 	}
+}
+
+func BenchmarkIPModificationDetails(b *testing.B) {
+	packet := &Packet{
+		Raw: []byte{
+			0x45, 0x00, 0x00, 0x28,
+			0x00, 0x00, 0x40, 0x00,
+			0x40, 0x06, 0x00, 0x00,
+			0x0a, 0x00, 0x00, 0x01,
+			0x0a, 0x00, 0x00, 0x02,
+		},
+		PacketLen: 20,
+		Addr:      NewWinDivertAddress(),
+	}
+	packet.ParseHeaders()
+	newIP := net.ParseIP("192.168.1.1")
+
+	b.Run("JustByteAssignment", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			packet.Raw[12] = newIP[12]
+			packet.Raw[13] = newIP[13]
+			packet.Raw[14] = newIP[14]
+			packet.Raw[15] = newIP[15]
+		}
+	})
+
+	b.Run("IPTo4Conversion", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			_ = newIP.To4()
+		}
+	})
+
+	b.Run("TypeAssertion", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			_, _ = packet.IpHdr.(*header.IPv4Header)
+		}
+	})
+
+	b.Run("LengthCheck", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			_ = len(newIP) == 16
+		}
+	})
+
+	b.Run("ParsedCheck", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			if !packet.parsed {
+				packet.ParseHeaders()
+			}
+		}
+	})
+
+	b.Run("VersionCheck", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			_ = packet.ipVersion == 4
+		}
+	})
+
+	b.Run("FullFastPath", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			if len(newIP) == 16 && newIP[10] == 0xff && newIP[11] == 0xff {
+				packet.Raw[12] = newIP[12]
+				packet.Raw[13] = newIP[13]
+				packet.Raw[14] = newIP[14]
+				packet.Raw[15] = newIP[15]
+			}
+		}
+	})
+}
+
+func BenchmarkIPModificationFormats(b *testing.B) {
+	packet := &Packet{
+		Raw: []byte{
+			0x45, 0x00, 0x00, 0x28,
+			0x00, 0x00, 0x40, 0x00,
+			0x40, 0x06, 0x00, 0x00,
+			0x0a, 0x00, 0x00, 0x01,
+			0x0a, 0x00, 0x00, 0x02,
+		},
+		PacketLen: 20,
+		Addr:      NewWinDivertAddress(),
+	}
+	packet.ParseHeaders()
+
+	// Different IP formats to test
+	ipv4Mapped := net.ParseIP("192.168.1.1") // IPv4-mapped IPv6 (most common)
+	ipv4Only := net.IPv4(192, 168, 1, 1)     // Pure IPv4
+	ipv4Bytes := []byte{192, 168, 1, 1}      // Raw bytes
+	ipv6 := net.ParseIP("2001:db8::1")       // Pure IPv6
+
+	b.Run("IPv4MappedFormat", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			packet.SetSrcIP(ipv4Mapped)
+		}
+	})
+
+	b.Run("IPv4OnlyFormat", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			packet.SetSrcIP(ipv4Only)
+		}
+	})
+
+	b.Run("IPv4BytesFormat", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			packet.SetSrcIP(net.IP(ipv4Bytes))
+		}
+	})
+
+	b.Run("IPv6Format", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			packet.SetSrcIP(ipv6)
+		}
+	})
 }
