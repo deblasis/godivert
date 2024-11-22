@@ -31,7 +31,7 @@ func (p *Packet) ParseHeaders() {
 	}
 
 	// Handle empty packets
-	if len(p.Raw) == 0 {
+	if len(p.Raw) < 1 {
 		p.ipVersion = 0
 		p.hdrLen = 0
 		p.nextHeaderType = 0
@@ -41,9 +41,18 @@ func (p *Packet) ParseHeaders() {
 		return
 	}
 
+	// Get IP version and parse IP header
 	p.ipVersion = int(p.Raw[0] >> 4)
 	if p.ipVersion == 4 {
 		p.hdrLen = int((p.Raw[0] & 0xf) << 2)
+		if p.hdrLen < header.IPv4HeaderLen || p.hdrLen > len(p.Raw) {
+			p.hdrLen = 0
+			p.nextHeaderType = 0
+			p.IpHdr = nil
+			p.NextHeader = nil
+			p.parsed = true
+			return
+		}
 		p.nextHeaderType = p.Raw[9]
 		p.IpHdr = header.NewIPv4Header(p.Raw)
 	} else {
@@ -62,6 +71,7 @@ func (p *Packet) ParseHeaders() {
 	// Get the payload after IP header
 	payload := p.Raw[p.hdrLen:]
 
+	// Parse next header based on protocol
 	switch p.nextHeaderType {
 	case header.ICMPv4:
 		if len(payload) >= header.ICMPv4HeaderLen {

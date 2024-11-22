@@ -702,3 +702,280 @@ func BenchmarkPacketAllocation(b *testing.B) {
 		})
 	}
 }
+
+func TestIPHandling(t *testing.T) {
+	// Test packet with IPv4 header
+	packet := &Packet{
+		Raw: []byte{
+			0x45, 0x00, 0x00, 0x28, // IPv4, header len 20
+			0x00, 0x00, 0x40, 0x00,
+			0x40, 0x06, 0x00, 0x00, // TCP protocol
+			0x0a, 0x00, 0x00, 0x01, // src: 10.0.0.1
+			0x0a, 0x00, 0x00, 0x02, // dst: 10.0.0.2
+		},
+		PacketLen: 20,
+		Addr:      NewWinDivertAddress(),
+	}
+	packet.ParseHeaders()
+
+	tests := []struct {
+		name     string
+		input    net.IP
+		fn       func(net.IP)
+		getFn    func() net.IP
+		expected net.IP
+	}{
+		{
+			name:     "IPv4 mapped to IPv6",
+			input:    net.ParseIP("192.168.1.1"),
+			fn:       packet.SetSrcIP,
+			getFn:    packet.SrcIP,
+			expected: net.IPv4(192, 168, 1, 1),
+		},
+		{
+			name:     "Pure IPv4",
+			input:    net.IPv4(172, 16, 1, 1),
+			fn:       packet.SetSrcIP,
+			getFn:    packet.SrcIP,
+			expected: net.IPv4(172, 16, 1, 1),
+		},
+		{
+			name:     "IPv4 as bytes",
+			input:    net.IP{10, 1, 1, 1},
+			fn:       packet.SetSrcIP,
+			getFn:    packet.SrcIP,
+			expected: net.IPv4(10, 1, 1, 1),
+		},
+		{
+			name:     "Dst IPv4 mapped to IPv6",
+			input:    net.ParseIP("192.168.1.2"),
+			fn:       packet.SetDstIP,
+			getFn:    packet.DstIP,
+			expected: net.IPv4(192, 168, 1, 2),
+		},
+		{
+			name:     "Dst Pure IPv4",
+			input:    net.IPv4(172, 16, 1, 2),
+			fn:       packet.SetDstIP,
+			getFn:    packet.DstIP,
+			expected: net.IPv4(172, 16, 1, 2),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Set IP
+			tt.fn(tt.input)
+
+			// Get IP and compare
+			got := tt.getFn()
+			if !got.Equal(tt.expected) {
+				t.Errorf("got %v, want %v", got, tt.expected)
+			}
+
+			// Verify Modified flag is set
+			if !packet.IpHdr.NeedNewChecksum() {
+				t.Error("Modified flag not set after IP change")
+			}
+		})
+	}
+}
+
+func TestIPHandlingEdgeCases(t *testing.T) {
+	tests := []struct {
+		name        string
+		packetBytes []byte
+		wantParsed  bool
+		wantVersion int
+		wantSrcIP   net.IP
+		wantDstIP   net.IP
+	}{
+		{
+			name:        "Empty packet",
+			packetBytes: []byte{},
+			wantParsed:  true, // Empty packets are marked as parsed
+			wantVersion: 0,
+			wantSrcIP:   nil,
+			wantDstIP:   nil,
+		},
+		{
+			name:        "Too short for version",
+			packetBytes: []byte{0x45},
+			wantParsed:  true, // Invalid packets are marked as parsed
+			wantVersion: 4,
+			wantSrcIP:   nil,
+			wantDstIP:   nil,
+		},
+		{
+			name: "Invalid header length",
+			packetBytes: []byte{
+				0x43, 0x00, // IHL=3 (invalid)
+			},
+			wantParsed:  true, // Invalid packets are marked as parsed
+			wantVersion: 4,
+			wantSrcIP:   nil,
+			wantDstIP:   nil,
+		},
+		{
+			name: "Truncated IPv4 header",
+			packetBytes: []byte{
+				0x45, 0x00, 0x00, 0x14, // IPv4, header len 20
+				0x00, 0x00, 0x40, 0x00,
+				0x40, 0x06, // Truncated
+			},
+			wantParsed:  true, // Invalid packets are marked as parsed
+			wantVersion: 4,
+			wantSrcIP:   nil,
+			wantDstIP:   nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			packet := &Packet{
+				Raw:       tt.packetBytes,
+				PacketLen: uint(len(tt.packetBytes)),
+				Addr:      NewWinDivertAddress(),
+			}
+			packet.ParseHeaders()
+
+			if packet.parsed != tt.wantParsed {
+				t.Errorf("parsed = %v, want %v", packet.parsed, tt.wantParsed)
+			}
+
+			if packet.ipVersion != tt.wantVersion {
+				t.Errorf("version = %v, want %v", packet.ipVersion, tt.wantVersion)
+			}
+
+			gotSrcIP := packet.SrcIP()
+			if !ipEqual(gotSrcIP, tt.wantSrcIP) {
+				t.Errorf("SrcIP = %v, want %v", gotSrcIP, tt.wantSrcIP)
+			}
+
+			gotDstIP := packet.DstIP()
+			if !ipEqual(gotDstIP, tt.wantDstIP) {
+				t.Errorf("DstIP = %v, want %v", gotDstIP, tt.wantDstIP)
+			}
+		})
+	}
+}
+
+// Helper to compare IPs, handling nil cases
+func ipEqual(a, b net.IP) bool {
+	if a == nil && b == nil {
+		return true
+	}
+	if a == nil || b == nil {
+		return false
+	}
+	return a.Equal(b)
+}
+
+func TestNextHeaderParsing(t *testing.T) {
+	tests := []struct {
+		name        string
+		packetBytes []byte
+		wantProto   uint8
+		wantHeader  bool
+	}{
+		{
+			name: "TCP packet",
+			packetBytes: []byte{
+				// IPv4 header (20 bytes)
+				0x45, 0x00, 0x00, 0x3C, // IPv4, total length = 60 (20 + 40)
+				0x00, 0x00, 0x40, 0x00,
+				0x40, 0x06, 0x00, 0x00, // TCP (6)
+				0x0a, 0x00, 0x00, 0x01,
+				0x0a, 0x00, 0x00, 0x02,
+				// TCP header (20 bytes)
+				0x00, 0x50, 0x20, 0x00, // Source port, dest port
+				0x00, 0x00, 0x00, 0x00, // Sequence number
+				0x00, 0x00, 0x00, 0x00, // Ack number
+				0x50, 0x00, 0x00, 0x00, // Header length (5), flags
+				0x00, 0x00, 0x00, 0x00, // Window, checksum, urgent ptr
+			},
+			wantProto:  header.TCP,
+			wantHeader: true,
+		},
+		{
+			name: "UDP packet",
+			packetBytes: []byte{
+				// IPv4 header (20 bytes)
+				0x45, 0x00, 0x00, 0x1C, // IPv4, total length 28 (20+8)
+				0x00, 0x00, 0x40, 0x00,
+				0x40, 0x11, 0x00, 0x00, // UDP (17)
+				0x0a, 0x00, 0x00, 0x01,
+				0x0a, 0x00, 0x00, 0x02,
+				// UDP header (8 bytes)
+				0x00, 0x50, 0x20, 0x00,
+				0x00, 0x08, 0x00, 0x00,
+			},
+			wantProto:  header.UDP,
+			wantHeader: true,
+		},
+		{
+			name: "ICMPv4 packet",
+			packetBytes: []byte{
+				// IPv4 header (20 bytes)
+				0x45, 0x00, 0x00, 0x1C, // IPv4, total length 28 (20+8)
+				0x00, 0x00, 0x40, 0x00,
+				0x40, 0x01, 0x00, 0x00, // ICMP (1)
+				0x0a, 0x00, 0x00, 0x01,
+				0x0a, 0x00, 0x00, 0x02,
+				// ICMP header (8 bytes)
+				0x08, 0x00, 0x00, 0x00,
+				0x00, 0x00, 0x00, 0x00,
+			},
+			wantProto:  header.ICMPv4,
+			wantHeader: true,
+		},
+		{
+			name: "Unknown protocol",
+			packetBytes: []byte{
+				// IPv4 header (20 bytes)
+				0x45, 0x00, 0x00, 0x14, // IPv4, header len 20
+				0x00, 0x00, 0x40, 0x00,
+				0x40, 0xFF, 0x00, 0x00, // Unknown (255)
+				0x0a, 0x00, 0x00, 0x01,
+				0x0a, 0x00, 0x00, 0x02,
+			},
+			wantProto:  0xFF,
+			wantHeader: false,
+		},
+		{
+			name: "Truncated next header",
+			packetBytes: []byte{
+				// IPv4 header (20 bytes)
+				0x45, 0x00, 0x00, 0x28, // IPv4, header len 20
+				0x00, 0x00, 0x40, 0x00,
+				0x40, 0x06, 0x00, 0x00, // TCP
+				0x0a, 0x00, 0x00, 0x01,
+				0x0a, 0x00, 0x00, 0x02,
+				// Truncated TCP header (only 4 bytes instead of 20)
+				0x00, 0x50, 0x20, 0x00,
+			},
+			wantProto:  header.TCP,
+			wantHeader: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			packet := &Packet{
+				Raw:       tt.packetBytes,
+				PacketLen: uint(len(tt.packetBytes)),
+				Addr:      NewWinDivertAddress(),
+			}
+			packet.ParseHeaders()
+
+			if packet.nextHeaderType != tt.wantProto {
+				t.Errorf("nextHeaderType = %v, want %v", packet.nextHeaderType, tt.wantProto)
+			}
+
+			hasHeader := packet.NextHeader != nil
+			if hasHeader != tt.wantHeader {
+				t.Errorf("hasNextHeader = %v, want %v", hasHeader, tt.wantHeader)
+			}
+		})
+	}
+}

@@ -420,6 +420,9 @@ func (wd *WinDivertHandle) Recv() (*Packet, error) {
 		return nil, errors.New("can't receive, the handle isn't open")
 	}
 
+	dllMutex.RLock()
+	defer dllMutex.RUnlock()
+
 	if winDivertRecv == nil {
 		return nil, errors.New("WinDivert DLL not loaded")
 	}
